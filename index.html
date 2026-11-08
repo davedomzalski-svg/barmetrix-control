@@ -82,7 +82,19 @@ label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;font-wei
 .actions .row p{margin:0;flex:1}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:8px;z-index:30;max-width:90vw}
 .center{min-height:70vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center}
-@media (max-width:640px){.grid{grid-template-columns:1fr}}
+.days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:12px}
+.day{display:flex;flex-direction:column;align-items:flex-start;gap:3px;text-align:left;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px 10px;cursor:pointer;min-width:0}
+.day .dn{font-weight:600}
+.day.today{border-color:var(--accent)}
+.day.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.day.on .muted{color:#fff;opacity:.85}
+.ccards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
+.ccard{display:flex;flex-direction:column;align-items:flex-start;gap:6px;text-align:left;font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;cursor:pointer;min-width:0}
+.ccard:hover{border-color:var(--accent)}
+.ccard b{font-size:15px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+@media (max-width:900px){.days{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media (max-width:640px){.grid{grid-template-columns:1fr}.days{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -159,7 +171,7 @@ async function refresh(quiet){
   try { await Promise.all([loadClients(), loadQueue(), loadMapping().catch(()=>{})]); if (S.view==="history") await loadPulls(); render(); }
   catch(e){ if(!quiet) toast("Could not load: "+(e.message||e)); }
 }
-function startTimer(){ clearInterval(S.timer); S.timer = setInterval(()=>{ if(!S.edit && !M.other && !M.flag && !(S.view==="mapping" && M.tab==="hist") && document.visibilityState==="visible") refresh(true); }, 60000); }
+function startTimer(){ clearInterval(S.timer); S.timer = setInterval(()=>{ if(!S.edit && !M.other && !M.flag && !(S.view==="mapping" && M.search) && document.visibilityState==="visible") refresh(true); }, 60000); }
 
 /* ---------- auth ---------- */
 async function boot(){
@@ -187,7 +199,7 @@ function render(){
   if (!S.user) return;
   const v = S.view;
   $("#app").innerHTML = `<header><h1>Barmetrix File Pulls</h1>
-    <nav>${[["clients","Clients"],["mapping",`Mapping${M.open.length?` <span class="tag amber">${M.open.length}</span>`:""}`],["queue","Run queue"],["history","Pull history"]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
+    <nav>${[["clients","Clients"],["mapping",`Mapping${openTotal()?` <span class="tag amber">${openTotal()}</span>`:""}`],["queue","Run queue"],["history","Pull history"]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
     <div class="who"><span>${esc(S.user.email)}</span><button class="b" id="out">Sign out</button></div></header>
     <main id="main"></main>`;
   document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); if(S.view==="mapping") await loadMapping().catch(e=>toast(e.message)); render(); });
@@ -195,50 +207,214 @@ function render(){
   if (v==="clients") renderClients(); else if (v==="mapping") renderMapping(); else if (v==="queue") renderQueue(); else renderHistory();
 }
 
-/* ---------- mapping review ---------- */
-const M = {open:[], done:[], ready:true, err:null, tab:"open", venue:"", from:addDays(todayISO(),-7), to:todayISO(), q:"", other:null, hist:null};
+/* ---------- mapping review: organised by AUDIT DAY, then CLIENT ---------- */
+const mondayOf = iso => { const d = new Date(iso+"T12:00:00"); return addDays(iso, -((d.getDay()+6)%7)); };
+const daysBetween = (a,b) => Math.round((new Date(a+"T12:00:00")-new Date(b+"T12:00:00"))/864e5);
+const fmtDay = iso => new Date(iso+"T12:00:00").toLocaleDateString("en-US",{weekday:"short",month:"numeric",day:"numeric"});
+const M = {ready:true, sum:[], weekStart:mondayOf(todayISO()), day:todayISO(), client:null, items:[], audits:[], tab:"open", q:"", search:"", other:null, flag:null};
 const KIND = {mapped:"Mapped", trashed:"Trashed", decide:"Mapping to check", stuck:"No suggestion yet", trash:"Trash suggestion",
   fix:"Recipe / size fix", invoice:"Invoice line", unmapped:"Waiting for the count"};
+const KIND_ORDER = ["stuck","decide","trash","fix","invoice","unmapped"];
+const KIND_HEAD = {stuck:"The robot couldn't settle these", decide:"Suggestions to approve", trash:"Trash suggestions",
+  fix:"Recipe and size fixes", invoice:"Invoice lines", unmapped:"Not rung in yet — waiting for the count"};
 const kindTag = k => `<span class="tag ${k==="trash"||k==="trashed"?"":k==="fix"?"blue":k==="stuck"?"red":"amber"}">${esc(KIND[k]||k)}</span>`;
 const pct = c => c==null||c==="" ? "—" : Math.round(Number(c)*100)+"%";
-const ITEM_COLS = "id,venue,kind,title,suggestion,reason,target,size_type,delta_oz,bottle_ml,confidence,status,choice,other_text,decided_by,decided_at,decided_note,applied_at,applied_detail,created_at";
+const ITEM_COLS = "id,venue,client_id,audit_date,kind,title,suggestion,reason,target,size_type,delta_oz,bottle_ml,confidence,status,choice,other_text,decided_by,decided_at,decided_note,applied_at,applied_detail,created_at";
+const ckey = (cid,venue) => cid ? "c:"+cid : "v:"+venue;
+const clientOf = cid => S.clients.find(c=>c.id===cid);
+const isWaiting = r => r.status==="decided" || (r.flagged && (r.status==="robot"||r.status==="applied"));
+const openTotal = () => M.sum.filter(r=>r.status==="open").reduce((a,r)=>a+r.n,0);
 
 async function loadMapping(){
-  const o = await sb.from("mapping_items").select(ITEM_COLS).eq("status","open").order("venue").order("created_at").limit(1000);
-  if (o.error){ M.ready = !/relation|does not exist|schema cache/i.test(o.error.message); M.err = o.error.message; if (!M.ready) return; throw o.error; }
-  M.ready = true; M.err = null; M.open = o.data;
-  const d = await sb.from("mapping_items").select(ITEM_COLS).in("status",["robot","applied","failed"])
-    .gte("applied_at", M.from+"T00:00:00").lte("applied_at", M.to+"T23:59:59").order("applied_at",{ascending:false}).limit(2000);
-  if (d.error) throw d.error; M.done = d.data;
+  const end = addDays(M.weekStart,6);
+  const qs = await Promise.all([
+    sb.from("mapping_summary").select("*").gte("audit_date",M.weekStart).lte("audit_date",end),
+    sb.from("mapping_summary").select("*").in("status",["open","decided","failed"]),
+    sb.from("mapping_summary").select("*").is("audit_date",null)]);
+  const bad = qs.find(q=>q.error);
+  if (bad){ M.ready = !/relation|does not exist|schema cache|column/i.test(bad.error.message); if (!M.ready) return; throw bad.error; }
+  M.ready = true;
+  const seen = new Map();
+  qs.forEach(q=>q.data.forEach(r=>seen.set([r.client_id,r.venue,r.audit_date,r.status,r.flagged].join("|"), r)));
+  M.sum = [...seen.values()];
+  if (M.client) await loadClientItems();
+}
+async function loadClientItems(){
+  const c = M.client, out = [];
+  for (let from=0; ; from+=1000){
+    let q = sb.from("mapping_items").select(ITEM_COLS);
+    q = c.cid ? q.eq("client_id",c.cid) : q.eq("venue",c.venue).is("client_id",null);
+    if (c.audit!=="all") q = c.audit ? q.eq("audit_date",c.audit) : q.is("audit_date",null);
+    const r = await q.order("kind").order("title").range(from, from+999);
+    if (r.error) throw r.error;
+    out.push(...r.data);
+    if (r.data.length < 1000) break;
+  }
+  M.items = out;
+  const a = c.cid ? await sb.from("mapping_summary").select("audit_date").eq("client_id",c.cid)
+                  : await sb.from("mapping_summary").select("audit_date").eq("venue",c.venue);
+  M.audits = [...new Set((a.data||[]).map(r=>r.audit_date).filter(Boolean))].sort().reverse();
+}
+
+/* which clients have an audit on a given day: the schedule (cycle from the next / last audit date) */
+function scheduledOn(c, day){
+  if (!["active","onboarding"].includes((c.status||"").toLowerCase())) return false;
+  if (c.last_pulled_date===day || c.next_due_date===day) return true;
+  const cyc = cycleDays(c.audit_cycle, c.custom_cycle_days);
+  if (!cyc) return false;
+  const anchor = c.last_pulled_date && day < c.last_pulled_date ? c.last_pulled_date : c.next_due_date;
+  if (!anchor) return false;
+  const diff = daysBetween(day, anchor);
+  return diff % cyc === 0 && Math.abs(diff) <= cyc*12;
+}
+function tally(rows){
+  const t = {open:0, waiting:0, robot:0, done:0, failed:0};
+  rows.forEach(r=>{ if (r.status==="open") t.open+=r.n; else if (r.status==="failed") t.failed+=r.n;
+    else if (isWaiting(r)) t.waiting+=r.n; else if (r.status==="robot") t.robot+=r.n; else if (r.status==="applied") t.done+=r.n; });
+  return t;
+}
+function dayCards(day){
+  const cards = new Map();
+  S.clients.filter(c=>scheduledOn(c,day)).forEach(c=>cards.set(ckey(c.id), {cid:c.id, venue:c.client_display_name, rows:[]}));
+  M.sum.filter(r=>r.audit_date===day).forEach(r=>{
+    const k = ckey(r.client_id, r.venue);
+    if (!cards.has(k)) cards.set(k, {cid:r.client_id, venue:r.venue, rows:[]});
+    cards.get(k).rows.push(r);
+  });
+  return [...cards.values()].map(x=>{ const c = x.cid && clientOf(x.cid);
+      return Object.assign(x, {name: c ? c.client_display_name : x.venue, client:c, t:tally(x.rows)}); })
+    .sort((a,b)=> (b.t.open+b.t.failed)-(a.t.open+a.t.failed) || a.name.localeCompare(b.name));
 }
 
 function renderMapping(){
-  if (!M.ready){ $("#main").innerHTML = `<div class="msg info"><b>Mapping review isn't switched on in the database yet.</b> Run "STEP 4 - SUPABASE - mapping review" (Google Drive → My Drive → Barmetrix Automation) in the Supabase SQL Editor, then reload this page.</div>`; return; }
-  const tabs = [["open",`Needs a person (${M.open.length})`],["done","Mapped by the robot"],["hist","History"]];
-  $("#main").innerHTML = `<div class="tabs" style="padding:0;margin:0 0 14px">${tabs.map(([k,l])=>`<button data-mt="${k}" class="${M.tab===k?"on":""}">${l}</button>`).join("")}</div><div id="mbody"></div>`;
-  document.querySelectorAll("[data-mt]").forEach(b=>b.onclick=()=>{ M.tab=b.dataset.mt; M.other=null; renderMapping(); });
-  if (M.tab==="open") mapOpen(); else if (M.tab==="done") mapDone(); else mapHist();
+  if (!M.ready){ $("#main").innerHTML = `<div class="msg info"><b>The day-by-day Mapping board isn't switched on in the database yet.</b> Run "STEP 5 - SUPABASE - mapping by audit day" (Google Drive → My Drive → Barmetrix Automation) in the Supabase SQL Editor, then reload this page.</div>`; return; }
+  if (M.client) return renderClientAudit();
+  const today = todayISO(), days = [...Array(7)].map((_,i)=>addDays(M.weekStart,i));
+  const earlier = new Map();
+  M.sum.filter(r=>(r.status==="open"||r.status==="failed"||isWaiting(r)) && (!r.audit_date || r.audit_date < M.weekStart)).forEach(r=>{
+    const k = ckey(r.client_id,r.venue)+"|"+r.audit_date;
+    if (!earlier.has(k)) earlier.set(k, {cid:r.client_id, venue:r.venue, audit:r.audit_date, rows:[]});
+    earlier.get(k).rows.push(r);
+  });
+  const cards = dayCards(M.day);
+  $("#main").innerHTML = `
+    <div class="bar">
+      <button class="b" id="wkp" aria-label="Previous week">‹</button>
+      <b style="min-width:230px;text-align:center">Week of ${esc(fmtLong(M.weekStart))}</b>
+      <button class="b" id="wkn" aria-label="Next week">›</button>
+      <button class="b" id="wkt">Today</button>
+      <span class="grow"></span>
+      <input id="msearch" placeholder="Search every client: button or product" value="${esc(M.search)}" style="max-width:320px">
+    </div>
+    <div id="mboard">
+    <div class="days">${days.map(d=>{
+      const cs = dayCards(d), t = cs.reduce((a,x)=>(a.open+=x.t.open, a.failed+=x.t.failed, a), {open:0, failed:0});
+      return `<button class="day ${d===M.day?"on":""} ${d===today?"today":""}" data-day="${d}">
+        <span class="dn">${esc(fmtDay(d))}${d===today?" · today":""}</span>
+        <span class="small muted">${cs.length} audit${cs.length===1?"":"s"}</span>
+        ${t.open?`<span class="tag amber">${t.open} need a person</span>`:""}${t.failed?`<span class="tag red">${t.failed} failed</span>`:""}</button>`; }).join("")}</div>
+    ${earlier.size?`<div class="banner amber"><b>Still open from earlier audits</b>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">${[...earlier.values()].map(e=>{ const t = tally(e.rows), c = e.cid && clientOf(e.cid);
+        return `<button class="b" data-ec="${esc(e.cid||"")}" data-ev="${esc(e.venue)}" data-ea="${esc(e.audit||"")}">${esc(c?c.client_display_name:e.venue)} · ${e.audit?esc(fmtDay(e.audit)):"no date"} · ${t.open+t.failed+t.waiting} open</button>`; }).join("")}</div></div>`:""}
+    <h2 style="margin:18px 0 10px;font-size:18px">${esc(fmtLong(M.day))} <span class="muted small" style="font-weight:400">${cards.length} audit${cards.length===1?"":"s"}</span></h2>
+    <div class="ccards">${cards.map(x=>{
+      const t = x.t, any = t.open+t.waiting+t.robot+t.done+t.failed;
+      const cyc = x.client ? (CYCLES.find(c=>c[0]===x.client.audit_cycle)||[,""])[1] : "";
+      return `<button class="ccard" data-cc="${esc(x.cid||"")}" data-cv="${esc(x.venue)}">
+        <b>${esc(x.name)}</b>
+        <span class="small muted">${x.client?esc([POS_PREFIX[x.client.source_system]||"", cyc].filter(Boolean).join(" · ")):'<span class="tag red">Not linked to a client</span>'}</span>
+        <span class="chips">
+          ${t.open?`<span class="tag amber">${t.open} need a person</span>`:""}
+          ${t.failed?`<span class="tag red">${t.failed} failed</span>`:""}
+          ${t.waiting?`<span class="tag blue">${t.waiting} waiting for the robot</span>`:""}
+          ${t.robot?`<span class="tag green">${t.robot} mapped by the robot</span>`:""}
+          ${t.done?`<span class="tag">${t.done} done</span>`:""}
+          ${any?"":`<span class="muted small">${M.day>today?"Audit not done yet":"No mapping run yet"}</span>`}
+        </span></button>`; }).join("") || `<div class="muted">No audits on this day.</div>`}</div>
+    </div><div id="mresults"></div>`;
+  $("#wkp").onclick = ()=>moveWeek(-7); $("#wkn").onclick = ()=>moveWeek(7);
+  $("#wkt").onclick = ()=>{ M.weekStart = mondayOf(todayISO()); M.day = todayISO(); reloadBoard(); };
+  document.querySelectorAll("[data-day]").forEach(b=>b.onclick=()=>{ M.day=b.dataset.day; renderMapping(); });
+  document.querySelectorAll("[data-cc]").forEach(b=>b.onclick=()=>openClient(b.dataset.cc||null, b.dataset.cv, M.day));
+  document.querySelectorAll("[data-ec]").forEach(b=>b.onclick=()=>openClient(b.dataset.ec||null, b.dataset.ev, b.dataset.ea||null));
+  let tm; $("#msearch").oninput = e=>{ M.search=e.target.value; clearTimeout(tm); tm=setTimeout(searchAll,350); };
+  if (M.search) searchAll();
+}
+function moveWeek(n){ M.weekStart = addDays(M.weekStart,n); M.day = addDays(M.day,n); reloadBoard(); }
+async function reloadBoard(){ try{ await loadMapping(); }catch(e){ toast(e.message); } render(); }
+async function openClient(cid, venue, audit){
+  M.client = {cid, venue, audit}; M.other = null; M.q = "";
+  try{ await loadClientItems(); }catch(e){ toast(e.message); }
+  M.tab = M.items.some(i=>i.status==="open") ? "open" : M.items.some(i=>i.status==="failed") ? "robot" : M.items.some(i=>i.status==="decided"||i.choice==="wrong") ? "waiting" : "robot";
+  render(); window.scrollTo(0,0);
 }
 
-function venueSelect(list){
-  const vs = [...new Set(list.map(i=>i.venue))].sort();
-  if (M.venue && !vs.includes(M.venue)) vs.unshift(M.venue);
-  return `<select id="mv" style="max-width:260px"><option value="">All venues</option>${vs.map(v=>`<option ${v===M.venue?"selected":""}>${esc(v)}</option>`).join("")}</select>`;
+async function searchAll(){
+  const box = $("#mresults"), board = $("#mboard"); if (!box) return;
+  const t = M.search.trim();
+  if (!t){ box.innerHTML = ""; board.hidden = false; return; }
+  board.hidden = true; box.innerHTML = `<div class="muted">Searching…</div>`;
+  const s = t.replace(/[%,()]/g," ");
+  const r = await sb.from("mapping_items").select(ITEM_COLS).or(`title.ilike.%${s}%,suggestion.ilike.%${s}%,venue.ilike.%${s}%,other_text.ilike.%${s}%`).order("audit_date",{ascending:false}).limit(300);
+  if (r.error){ box.innerHTML = `<div class="msg err">${esc(r.error.message)}</div>`; return; }
+  box.innerHTML = `<div class="tablewrap"><table><thead><tr><th>Client</th><th>Audit</th><th>POS button</th><th>Type</th><th>Suggestion / what was done</th><th>Status</th></tr></thead><tbody>
+    ${r.data.map(i=>{ const c = i.client_id && clientOf(i.client_id);
+      return `<tr data-sc="${esc(i.client_id||"")}" data-sv="${esc(i.venue)}" data-sa="${esc(i.audit_date||"")}"><td>${esc(c?c.client_display_name:i.venue)}</td><td class="mono small">${i.audit_date?fmtDate(i.audit_date):"—"}</td>
+      <td><b>${esc(i.title)}</b></td><td>${kindTag(i.kind)}</td><td class="small" style="white-space:normal;max-width:340px">${esc(i.suggestion||"")}</td><td>${statusWord(i)}</td></tr>`; }).join("") || '<tr><td colspan="6" class="muted">Nothing found.</td></tr>'}
+    </tbody></table></div><p class="muted small">Click a row to open that client's audit.</p>`;
+  box.querySelectorAll("[data-sc]").forEach(tr=>tr.onclick=()=>{ M.search=""; openClient(tr.dataset.sc||null, tr.dataset.sv, tr.dataset.sa||null); });
+}
+function statusWord(i){
+  if (i.choice==="wrong") return `<span class="tag red">Flagged wrong</span>`;
+  return {open:'<span class="tag amber">Needs a person</span>', decided:'<span class="tag blue">Waiting for the robot</span>',
+    robot:'<span class="tag green">Mapped by the robot</span>', applied:'<span class="tag">Done</span>', failed:'<span class="tag red">Failed</span>'}[i.status] || esc(i.status);
 }
 
-function mapOpen(){
-  const items = M.open.filter(i=>!M.venue || i.venue===M.venue);
-  const byVenue = {}; items.forEach(i=>(byVenue[i.venue] ||= []).push(i));
-  $("#mbody").innerHTML = `<div class="bar">${venueSelect(M.open)}<span class="grow"></span><span class="muted small">Approve sends it to the robot. Reject leaves it alone and stops it being suggested again. Something else: say what it should be.</span></div>
-    ${items.length ? Object.entries(byVenue).map(([v,list])=>`<h3 style="margin:18px 0 8px">${esc(v)} <span class="muted small">${list.length}</span></h3>
-      <div class="actions">${list.map(cardHTML).join("")}</div>`).join("") : `<div class="center" style="min-height:30vh"><b>Nothing needs a person right now.</b><span class="muted">New items appear here after each mapping run.</span></div>`}`;
-  $("#mv").onchange = e=>{ M.venue=e.target.value; mapOpen(); };
+/* ---------- one client, one audit ---------- */
+function renderClientAudit(){
+  const c = M.client, cl = c.cid && clientOf(c.cid), name = cl ? cl.client_display_name : c.venue;
+  const it = M.items;
+  const open = it.filter(i=>i.status==="open");
+  const waiting = it.filter(i=>i.status==="decided" || (i.choice==="wrong" && i.status!=="open"));
+  const robot = it.filter(i=>(i.status==="robot"||i.status==="failed") && i.choice!=="wrong");
+  const done = it.filter(i=>i.status==="applied" && i.choice!=="wrong");
+  const audits = [...new Set([...(c.audit && c.audit!=="all"?[c.audit]:[]), ...M.audits])].sort().reverse();
+  const tabs = [["open","Needs a person",open.length],["waiting","Waiting for the robot",waiting.length],["robot","Mapped by the robot",robot.length],["done","Done",done.length]];
+  $("#main").innerHTML = `
+    <div class="bar"><button class="b" id="mback">‹ ${esc(fmtLong(M.day))}</button></div>
+    <div class="bar" style="align-items:baseline">
+      <h2 style="margin:0;font-size:22px">${esc(name)}</h2>
+      ${cl?"":'<span class="tag red">Not linked to a client</span>'}
+      <span class="grow"></span>
+      <label style="margin:0">Audit</label>
+      <select id="maudit" style="max-width:300px">${audits.map(a=>`<option value="${a}" ${a===c.audit?"selected":""}>${esc(fmtLong(a))}</option>`).join("")}
+        ${c.audit===null?'<option value="" selected>No audit date</option>':""}<option value="all" ${c.audit==="all"?"selected":""}>All audits</option></select>
+    </div>
+    ${cl?"":`<div class="msg info">These items came from a Pilot venue name that doesn't match a client in the Clients tab. They still work; Claude links them on the next run.</div>`}
+    <div class="tabs" style="padding:0;margin:0 0 14px">${tabs.map(([k,l,n])=>`<button data-mt="${k}" class="${M.tab===k?"on":""}">${l} (${n})</button>`).join("")}</div>
+    <div id="mbody"></div>`;
+  $("#mback").onclick = ()=>{ M.client=null; M.items=[]; render(); };
+  $("#maudit").onchange = async e=>{ M.client.audit = e.target.value===""?null:e.target.value; try{ await loadClientItems(); }catch(er){ toast(er.message); } renderClientAudit(); };
+  document.querySelectorAll("[data-mt]").forEach(b=>b.onclick=()=>{ M.tab=b.dataset.mt; M.other=null; renderClientAudit(); });
+  if (M.tab==="open") mapOpen(open);
+  else if (M.tab==="waiting") mapTable(waiting, "Nothing waiting. Decisions show here until the robot's next run carries them out.");
+  else if (M.tab==="robot") mapTable(robot, "The robot hasn't mapped anything on its own for this audit.", true);
+  else mapTable(done, "Nothing finished yet for this audit.");
+}
+
+function mapOpen(items){
+  const byKind = {}; items.forEach(i=>(byKind[i.kind] ||= []).push(i));
+  const kinds = [...KIND_ORDER.filter(k=>byKind[k]), ...Object.keys(byKind).filter(k=>!KIND_ORDER.includes(k))];
+  $("#mbody").innerHTML = items.length ? `<p class="muted small" style="margin-top:0">Approve sends it to the robot. Reject leaves it alone and stops it being suggested again. Something else: say what it should be.</p>
+    ${kinds.map(k=>`<h3 style="margin:18px 0 8px;font-size:15px">${esc(KIND_HEAD[k]||KIND[k]||k)} <span class="muted small">${byKind[k].length}</span></h3>
+      <div class="actions">${byKind[k].map(cardHTML).join("")}</div>`).join("")}`
+    : `<div class="center" style="min-height:30vh"><b>Nothing needs a person for this audit.</b><span class="muted">New items appear here after each mapping run.</span></div>`;
   wireCards();
 }
 function cardHTML(i){
   const other = M.other===i.id;
   return `<div class="row" data-id="${esc(i.id)}" style="flex-wrap:wrap">
-    <p style="min-width:260px"><b>${esc(i.title)}</b> &nbsp;${kindTag(i.kind)}<br>
+    <p style="min-width:260px"><b>${esc(i.title)}</b><br>
       <span>${esc(i.suggestion||"")}</span>${i.confidence!=null?` <span class="muted small">· ${pct(i.confidence)} sure</span>`:""}<br>
       <span class="muted small" style="white-space:normal">${esc(i.reason||"")}</span></p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
@@ -255,50 +431,49 @@ function wireCards(){
     const id = row.dataset.id;
     row.querySelectorAll("[data-a]").forEach(b=>b.onclick=async()=>{
       const a = b.dataset.a;
-      if (a==="other"){ M.other=id; mapOpen(); $("#ot")?.focus(); return; }
-      if (a==="other-cancel"){ M.other=null; mapOpen(); return; }
-      let patch = {status:"decided", choice:a, decided_by:S.user.email, decided_at:new Date().toISOString(), updated_at:new Date().toISOString()};
+      if (a==="other"){ M.other=id; renderClientAudit(); $("#ot")?.focus(); return; }
+      if (a==="other-cancel"){ M.other=null; renderClientAudit(); return; }
+      const now = new Date().toISOString();
+      let patch = {status:"decided", choice:a, decided_by:S.user.email, decided_at:now, updated_at:now};
       if (a==="other-save"){ const t = ($("#ot").value||"").trim(); if (!t){ toast("Write what it should be first."); return; } patch.choice="other"; patch.other_text=t; }
       b.disabled = true;
       const r = await sb.from("mapping_items").update(patch).eq("id",id).eq("status","open").select("id");
       if (r.error){ toast("Not saved: "+r.error.message); b.disabled=false; return; }
-      if (!r.data?.length){ toast("Someone already decided this one."); }
+      if (!r.data?.length) toast("Someone already decided this one.");
       else toast({approve:"Approved — the robot does it on its next run.",reject:"Rejected — it won't be suggested again.",noted:"Noted.","other-save":"Saved — it'll be handled on the next run."}[a]);
-      M.other=null; M.open = M.open.filter(x=>x.id!==id); render();
+      M.other=null; const it = M.items.find(x=>x.id===id); if (it) Object.assign(it, patch);
+      loadMapping().catch(()=>{}).then(render);
     });
   });
 }
 
-function mapDone(){
-  $("#mbody").innerHTML = `<div class="bar">${venueSelect(M.done)}
-      <label style="margin:0">From</label><input type="date" id="mf" value="${M.from}" style="max-width:170px">
-      <label style="margin:0">To</label><input type="date" id="mt" value="${M.to}" style="max-width:170px">
-      <input id="mq" placeholder="Search button or product" value="${esc(M.q)}" style="max-width:240px">
-      <span class="grow"></span><span class="muted small" id="mcount"></span></div>
-    <div class="tablewrap"><table><thead><tr><th>When</th><th>Venue</th><th>POS button</th><th>What the robot did</th><th>Sure</th><th>Why</th><th></th></tr></thead><tbody id="mrows"></tbody></table></div>`;
+function mapTable(list, empty, canFlag){
+  $("#mbody").innerHTML = `<div class="bar"><input id="mq" placeholder="Search button or product" value="${esc(M.q)}" style="max-width:280px"><span class="grow"></span><span class="muted small" id="mcount"></span></div>
+    <div class="tablewrap"><table><thead><tr><th>POS button</th><th>Type</th><th>What was done</th><th>Sure</th><th>Who / when</th><th>Why</th><th></th></tr></thead><tbody id="mrows"></tbody></table></div>`;
   const draw = ()=>{
     const t = M.q.toLowerCase();
-    const list = M.done.filter(i=>(!M.venue||i.venue===M.venue) && (!t || (i.title+" "+(i.suggestion||"")+" "+(i.target||"")).toLowerCase().includes(t)));
-    $("#mcount").textContent = `${list.length} item${list.length===1?"":"s"}`;
-    $("#mrows").innerHTML = list.map(i=>`<tr data-id="${esc(i.id)}" style="cursor:default">
-      <td class="mono">${fmtTime(i.applied_at)}</td><td>${esc(i.venue)}</td><td><b>${esc(i.title)}</b></td>
-      <td>${i.status==="failed"?'<span class="tag red">Failed</span> ':""}${esc(i.suggestion||i.applied_detail||"")}${i.choice==="wrong"?` <span class="tag red">Flagged: ${esc(i.other_text||"")}</span>`:""}${i.decided_by&&i.choice==="approve"?` <span class="muted small">· approved by ${esc(i.decided_by.split("@")[0])}</span>`:""}</td>
-      <td>${pct(i.confidence)}</td><td class="small" style="white-space:normal;max-width:360px">${esc(i.reason||"")}</td>
-      <td>${i.choice==="wrong"||i.status==="failed"?"":`<button class="b" data-w="${esc(i.id)}">Wrong — fix it</button>`}</td></tr>`).join("") ||
-      `<tr><td colspan="7" class="muted">Nothing mapped by the robot in these dates.</td></tr>`;
-    document.querySelectorAll("[data-w]").forEach(b=>b.onclick=()=>flagWrong(M.done.find(i=>i.id===b.dataset.w)));
+    const rows = list.filter(i=>!t || (i.title+" "+(i.suggestion||"")+" "+(i.target||"")).toLowerCase().includes(t));
+    $("#mcount").textContent = `${rows.length} item${rows.length===1?"":"s"}`;
+    $("#mrows").innerHTML = rows.map(i=>{
+      const who = i.decided_by ? i.decided_by.split("@")[0] : i.decided_note || (i.status==="robot"||i.status==="failed" ? "robot" : "");
+      const what = i.choice==="wrong" ? `Flagged wrong → ${esc(i.other_text||"")}` : i.choice==="other" ? `Changed → ${esc(i.other_text||"")}` :
+        i.choice==="reject" ? "Rejected" : i.choice==="noted" ? "Noted" : esc(i.suggestion||i.applied_detail||"");
+      return `<tr style="cursor:default"><td><b>${esc(i.title)}</b></td><td>${kindTag(i.kind)}</td>
+        <td style="white-space:normal;max-width:340px">${i.status==="failed"?'<span class="tag red">Failed</span> ':""}${what}${i.applied_detail&&i.choice?`<div class="muted small">${esc(i.applied_detail)}</div>`:""}</td>
+        <td>${pct(i.confidence)}</td><td class="small">${esc(who)}<div class="muted mono">${fmtTime(i.decided_at||i.applied_at||i.created_at)}</div></td>
+        <td class="small" style="white-space:normal;max-width:320px">${esc(i.reason||"")}</td>
+        <td>${canFlag && i.status==="robot" && i.choice!=="wrong"?`<button class="b" data-w="${esc(i.id)}">Wrong — fix it</button>`:""}</td></tr>`; }).join("") ||
+      `<tr><td colspan="7" class="muted">${esc(empty)}</td></tr>`;
+    document.querySelectorAll("[data-w]").forEach(b=>b.onclick=()=>flagWrong(list.find(i=>i.id===b.dataset.w)));
   };
   draw();
-  $("#mv").onchange = e=>{ M.venue=e.target.value; draw(); };
   $("#mq").oninput = e=>{ M.q=e.target.value; draw(); };
-  const redate = async()=>{ M.from=$("#mf").value||M.from; M.to=$("#mt").value||M.to; try{ await loadMapping(); }catch(e){ toast(e.message); } mapDone(); };
-  $("#mf").onchange = redate; $("#mt").onchange = redate;
 }
 function flagWrong(i){
   M.flag = i.id;
   const ov = document.createElement("div"); ov.className="overlay";
   ov.innerHTML = `<div class="drawer" role="dialog" aria-modal="true">
-    <div class="hd"><h2>Wrong mapping</h2><div class="muted small">${esc(i.venue)}</div></div>
+    <div class="hd"><h2>Wrong mapping</h2><div class="muted small">${esc(i.venue)}${i.audit_date?" · audit "+esc(fmtLong(i.audit_date)):""}</div></div>
     <div class="body"><div id="wm"></div><p><b>${esc(i.title)}</b><br>The robot did: ${esc(i.suggestion||"")}</p>
       <label>What should it be?</label><textarea id="wt" placeholder="e.g. Should be Don Julio Reposado, not Blanco — or: should be trashed"></textarea>
       <p class="hint">The robot removes the wrong mapping and puts the right one in on its next run. Your correction is also kept so it doesn't make the same mistake again.</p></div>
@@ -311,31 +486,11 @@ function flagWrong(i){
     const t = ($("#wt").value||"").trim();
     if (!t){ $("#wm").innerHTML = `<div class="msg err">Write what it should be first.</div>`; return; }
     $("#ws").disabled = true;
-    const r = await sb.from("mapping_items").update({choice:"wrong", other_text:t, decided_by:S.user.email, decided_at:new Date().toISOString(), updated_at:new Date().toISOString()}).eq("id",i.id).select("id");
+    const now = new Date().toISOString();
+    const r = await sb.from("mapping_items").update({choice:"wrong", other_text:t, decided_by:S.user.email, decided_at:now, updated_at:now}).eq("id",i.id).select("id");
     if (r.error || !r.data?.length){ $("#ws").disabled=false; $("#wm").innerHTML = `<div class="msg err">Not saved: ${esc(r.error?.message||"no row updated")}</div>`; return; }
-    close(); toast("Sent — the robot fixes it on its next run."); await loadMapping().catch(()=>{}); renderMapping();
+    close(); toast("Sent — the robot fixes it on its next run."); await loadMapping().catch(()=>{}); render();
   };
-}
-
-async function mapHist(){
-  $("#mbody").innerHTML = `<div class="bar"><input id="hq" placeholder="Search any button, product or venue" value="${esc(M.q)}" style="max-width:360px"><span class="muted small">Every decision and every robot mapping, newest first.</span></div><div id="hres" class="muted">Loading…</div>`;
-  const run = async()=>{
-    const t = ($("#hq").value||"").trim(); M.q = t;
-    let q = sb.from("mapping_items").select(ITEM_COLS).neq("status","open").order("updated_at",{ascending:false}).limit(300);
-    if (t){ const s = t.replace(/[%,()]/g," "); q = q.or(`title.ilike.%${s}%,suggestion.ilike.%${s}%,venue.ilike.%${s}%,other_text.ilike.%${s}%`); }
-    const r = await q; const el = $("#hres"); if (!el) return;
-    if (r.error){ el.textContent = r.error.message; return; }
-    el.classList.remove("muted");
-    const who = i => i.decided_by ? i.decided_by.split("@")[0] : i.decided_note ? i.decided_note : (i.status==="robot"?"robot":"");
-    const what = i => ({approve:"Approved",reject:"Rejected",other:"Changed: "+(i.other_text||""),wrong:"Flagged wrong: "+(i.other_text||""),noted:"Noted"}[i.choice] || (i.status==="robot"?"Done by the robot":i.status));
-    el.innerHTML = `<div class="tablewrap"><table><thead><tr><th>Venue</th><th>Item</th><th>Type</th><th>Suggestion</th><th>Decision</th><th>Who</th><th>When</th><th>Result</th></tr></thead><tbody>
-      ${r.data.map(i=>`<tr style="cursor:default"><td>${esc(i.venue)}</td><td><b>${esc(i.title)}</b></td><td>${kindTag(i.kind)}</td><td class="small" style="white-space:normal;max-width:280px">${esc(i.suggestion||"")}</td>
-        <td class="small" style="white-space:normal;max-width:220px">${esc(what(i))}</td><td class="small">${esc(who(i))}</td><td class="mono small">${fmtTime(i.decided_at||i.applied_at||i.created_at)}</td>
-        <td class="small" style="white-space:normal;max-width:240px">${esc(i.applied_detail||(i.status==="decided"?"Waiting for the robot's next run":""))}</td></tr>`).join("") || '<tr><td colspan="8" class="muted">Nothing found.</td></tr>'}
-      </tbody></table></div>`;
-  };
-  let tm; $("#hq").oninput = ()=>{ clearTimeout(tm); tm = setTimeout(run, 350); };
-  run();
 }
 
 function renderClients(){
