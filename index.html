@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Barmetrix File Pulls</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<style>
+:root{
+  --bg:#f6f5f2;--panel:#fff;--ink:#1d2026;--muted:#646b76;--line:#e2e0da;--accent:#1f5f8b;
+  --red:#c8372d;--red-bg:#fbe4e1;--blue:#1e6fc2;--blue-bg:#e1eefb;--amber:#a35f00;--amber-bg:#fdecd2;
+  --yellow-bg:#fff7c9;--green:#2c7a45;--green-bg:#e2f3e7;--grey-bg:#eceae5;
+  --mono:'IBM Plex Mono',ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#15171b;--panel:#1d2026;--ink:#e8e6e1;--muted:#9aa1ab;--line:#30343c;--accent:#6fb0e0;
+  --red:#ff7b70;--red-bg:#4a1f1c;--blue:#7fb6f0;--blue-bg:#18324d;--amber:#f2b25c;--amber-bg:#46310f;
+  --yellow-bg:#3d3713;--green:#79cf95;--green-bg:#183a24;--grey-bg:#2a2d33;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 'IBM Plex Sans',system-ui,sans-serif}
+header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px max(16px,env(safe-area-inset-left));border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5}
+header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.01em}
+nav{display:flex;gap:4px}
+nav button{background:none;border:0;padding:6px 12px;border-radius:6px;color:var(--muted);font:inherit;cursor:pointer}
+nav button.on{background:var(--grey-bg);color:var(--ink);font-weight:500}
+.who{margin-left:auto;color:var(--muted);font-size:13px;display:flex;gap:10px;align-items:center}
+main{padding:16px max(16px,env(safe-area-inset-left)) 60px;max-width:1500px;margin:0 auto}
+button.b{font:inherit;font-weight:500;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:8px 14px;border-radius:7px;cursor:pointer}
+button.b:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{color:var(--red);border-color:var(--red)}
+button.warn{background:var(--amber);border-color:var(--amber);color:#fff}
+button.big{padding:12px 22px;font-size:15px}
+button:disabled{opacity:.5;cursor:default}
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.bar .grow{flex:1}
+input,select,textarea{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 9px;width:100%}
+textarea{min-height:80px}
+.banner{border-radius:8px;padding:10px 14px;margin-bottom:8px;border-left:4px solid}
+.banner b{display:block;margin-bottom:2px}
+.banner.red{background:var(--red-bg);border-color:var(--red)}
+.banner.blue{background:var(--blue-bg);border-color:var(--blue)}
+.banner.amber{background:var(--amber-bg);border-color:var(--amber)}
+.tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;min-width:980px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:500;background:var(--panel);position:sticky;top:0}
+tbody tr{cursor:pointer}
+tbody tr:hover td{filter:brightness(.97)}
+tr.r-red td{background:var(--red-bg)} tr.r-blue td{background:var(--blue-bg)}
+tr.r-amber td{background:var(--amber-bg)} tr.r-yellow td{background:var(--yellow-bg)}
+td.mono,.mono{font-family:var(--mono);font-size:13px}
+.tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:500;background:var(--grey-bg);color:var(--muted)}
+.tag.green{background:var(--green-bg);color:var(--green)} .tag.red{background:var(--red-bg);color:var(--red)}
+.tag.blue{background:var(--blue-bg);color:var(--blue)} .tag.amber{background:var(--amber-bg);color:var(--amber)}
+.muted{color:var(--muted)} .small{font-size:12px}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;justify-content:flex-end;z-index:20}
+.drawer{background:var(--panel);width:min(680px,100%);height:100%;display:flex;flex-direction:column;box-shadow:-8px 0 30px rgba(0,0,0,.2)}
+.drawer .hd{padding:18px 22px 0}
+.drawer .hd h2{margin:0 0 4px;font-size:20px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-top:14px;padding:0 22px}
+.tabs button{border:0;background:none;padding:10px 14px;font:inherit;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent}
+.tabs button.on{color:var(--ink);border-color:var(--accent);font-weight:500}
+.body{padding:18px 22px;overflow:auto;flex:1}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid .full{grid-column:1/-1}
+label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;font-weight:500}
+.hint{font-size:12px;color:var(--muted);margin-top:3px}
+.ft{padding:14px 22px;border-top:1px solid var(--line);display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.ft .grow{flex:1}
+.msg{padding:10px 12px;border-radius:7px;margin-bottom:12px}
+.msg.err{background:var(--red-bg);color:var(--red)} .msg.ok{background:var(--green-bg);color:var(--green)}
+.msg.info{background:var(--blue-bg)}
+.diff{font-family:var(--mono);font-size:13px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:10px 0}
+.diff div{padding:2px 0}
+.diff del{color:var(--red)} .diff ins{color:var(--green);text-decoration:none}
+.actions{display:flex;flex-direction:column;gap:10px}
+.actions .row{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:12px}
+.actions .row p{margin:0;flex:1}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:8px;z-index:30;max-width:90vw}
+.center{min-height:70vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center}
+@media (max-width:640px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+"use strict";
+const C = window.BARMETRIX_CONFIG || {};
+const sb = window.supabase.createClient(C.supabaseUrl, C.supabaseAnonKey);
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+const SOURCES = [["toast","Toast"],["spoton","SpotOn"],["mstarpos","MStar"],["square","Square"],["silverware","Silverware (not automated)"],["none","None — Fintech only"]];
+const AUTOMATED = new Set(["toast","spoton","mstarpos","square"]);
+const POS_PREFIX = {toast:"Toast",spoton:"SpotOn",mstarpos:"MstarPOS",square:"Square",silverware:"Silverware"};
+const CYCLES = [["weekly","Weekly"],["biweekly","Every 2 weeks"],["4-week","Every 4 weeks"],["custom","Custom"],["on_hold","On hold"]];
+const STATUSES = [["active","Active"],["paused","Paused"],["onboarding","Onboarding"]];
+const DAYS = ["","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+const FINTECH_NONE = new Set(["","no","none","no fintech"]);
+const EDIT_FIELDS = ["client_display_name","source_system","login_reference","client_pos_id","audit_cycle","audit_day_of_week","custom_cycle_days","last_pulled_date","next_due_date","status","notes","fintech_login_reference","fintech_client_pos_id","fintech_retailer_name"];
+const LABEL = {client_display_name:"Client name",source_system:"POS",login_reference:"POS login (1Password item)",client_pos_id:"POS venue name / ID",audit_cycle:"Audit cycle",audit_day_of_week:"Audit day",custom_cycle_days:"Custom cycle days",last_pulled_date:"Last audit date",next_due_date:"Next audit date",status:"Client status",notes:"Notes",fintech_login_reference:"Fintech login (1Password item)",fintech_client_pos_id:"Fintech venue name",fintech_retailer_name:"Fintech retailer name"};
+
+let S = {user:null, view:"clients", clients:[], queue:[], pulls:[], hasDelayCols:true, timer:null, edit:null};
+
+/* ---------- dates ---------- */
+const todayISO = () => { const d = new Date(); return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10); };
+const addDays = (iso,n) => { const d = new Date(iso+"T12:00:00"); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
+const fmtDate = iso => { if(!iso) return "—"; const d = new Date(String(iso).slice(0,10)+"T12:00:00"); return d.toLocaleDateString("en-US",{weekday:"short",month:"2-digit",day:"2-digit",year:"numeric"}); };
+const fmtLong = iso => { if(!iso) return "—"; const d = new Date(String(iso).slice(0,10)+"T12:00:00"); return d.toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"}); };
+const fmtTime = ts => ts ? new Date(ts).toLocaleString("en-US",{weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "—";
+const cycleDays = (c,custom) => ({weekly:7,biweekly:14,"4-week":28}[c] || (c==="custom" ? parseInt(custom)||0 : 0));
+
+/* ---------- client state ---------- */
+const hasFintech = c => !FINTECH_NONE.has(String(c.fintech_login_reference||"").trim().replace(/^"+|"+$/g,"").toLowerCase());
+const isFailed = c => (c.last_pull_status||"").toLowerCase()==="failed" || (c.fintech_last_pull_status||"").toLowerCase()==="failed";
+const isDelayed = c => c.toast_data_delay==="delayed" && (c.last_pull_status||"")==="failed";
+function rowClass(c){
+  if (isDelayed(c)) return "r-blue";
+  if (isFailed(c)) return "r-red";
+  if ((c.status||"").toLowerCase()==="paused") return "r-amber";
+  if ((c.status||"").toLowerCase()==="active" && c.next_due_date && c.next_due_date < todayISO()) return "r-yellow";
+  return "";
+}
+function statusTag(v){
+  const s = (v||"").toLowerCase();
+  if (!s) return '<span class="tag">—</span>';
+  const cls = s==="succeeded"?"green":s==="failed"?"red":s==="pending"?"amber":"";
+  const txt = {succeeded:"Succeeded",failed:"Failed",pending:"Pending",never_attempted:"Never run"}[s] || s;
+  return `<span class="tag ${cls}">${esc(txt)}</span>`;
+}
+
+/* ---------- data ---------- */
+const CLIENT_COLS = "id,client_display_name,source_system,login_reference,client_pos_id,audit_cycle,audit_day_of_week,custom_cycle_days,last_pulled_date,next_due_date,status,notes,last_pull_status,fintech_last_pull_status,fintech_login_reference,fintech_client_pos_id,fintech_retailer_name,deleted_at,updated_at";
+const DELAY_COLS = ",toast_data_delay,toast_data_delay_last_update,toast_data_delay_checked_at,delay_reviewed_at";
+
+async function loadClients(){
+  let q = await sb.from("clients").select(CLIENT_COLS + (S.hasDelayCols?DELAY_COLS:"")).is("deleted_at",null).order("client_display_name");
+  if (q.error && S.hasDelayCols && /column/i.test(q.error.message)) { S.hasDelayCols = false; return loadClients(); }
+  if (q.error) throw q.error;
+  S.clients = q.data;
+}
+async function loadQueue(){
+  const since = new Date(Date.now()-3*864e5).toISOString();
+  const q = await sb.from("run_requests").select("*").gte("requested_at",since).order("requested_at",{ascending:false}).limit(60);
+  if (q.error) throw q.error;
+  S.queue = q.data;
+}
+async function loadPulls(){
+  const since = addDays(todayISO(), -21);
+  const q = await sb.from("data_pulls").select("id,client_id,run_date,report_type,status,trigger_type,pull_start_date,pull_end_date,error_message,file_paths,started_at,completed_at").gte("run_date",since).order("started_at",{ascending:false}).limit(400);
+  if (q.error) throw q.error;
+  S.pulls = q.data;
+}
+async function refresh(quiet){
+  try { await Promise.all([loadClients(), loadQueue()]); if (S.view==="history") await loadPulls(); render(); }
+  catch(e){ if(!quiet) toast("Could not load: "+(e.message||e)); }
+}
+function startTimer(){ clearInterval(S.timer); S.timer = setInterval(()=>{ if(!S.edit && document.visibilityState==="visible") refresh(true); }, 60000); }
+
+/* ---------- auth ---------- */
+async function boot(){
+  if (!C.supabaseUrl || !C.supabaseAnonKey) { $("#app").innerHTML = `<div class="center"><h2>Not configured</h2><p class="muted">config.js is missing the Supabase address or public key.</p></div>`; return; }
+  const { data } = await sb.auth.getSession();
+  sb.auth.onAuthStateChange((_e, session)=>{ setUser(session?.user||null); });
+  setUser(data.session?.user||null);
+}
+async function setUser(u){
+  if (u && !/@barmetrix\.com$/i.test(u.email||"")) { await sb.auth.signOut(); S.user=null; signInScreen("That account isn't a barmetrix.com account. Sign in with your work Google account."); return; }
+  const was = S.user; S.user = u;
+  if (!u) { signInScreen(); return; }
+  if (!was) { await refresh(); startTimer(); }
+}
+function signInScreen(err){
+  $("#app").innerHTML = `<div class="center"><h1 style="margin:0">Barmetrix File Pulls</h1>
+    <p class="muted" style="max-width:420px">Sign in with your barmetrix.com Google account.</p>
+    ${err?`<div class="msg err">${esc(err)}</div>`:""}
+    <button class="b primary big" id="g">Sign in with Google</button></div>`;
+  $("#g").onclick = () => sb.auth.signInWithOAuth({provider:"google", options:{redirectTo: (location.origin + location.pathname).replace(/\/$/, ""), queryParams:{hd:"barmetrix.com", prompt:"select_account"}}});
+}
+
+/* ---------- render ---------- */
+function render(){
+  if (!S.user) return;
+  const v = S.view;
+  $("#app").innerHTML = `<header><h1>Barmetrix File Pulls</h1>
+    <nav>${[["clients","Clients"],["queue","Run queue"],["history","Pull history"]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
+    <div class="who"><span>${esc(S.user.email)}</span><button class="b" id="out">Sign out</button></div></header>
+    <main id="main"></main>`;
+  document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); render(); });
+  $("#out").onclick = ()=>sb.auth.signOut();
+  if (v==="clients") renderClients(); else if (v==="queue") renderQueue(); else renderHistory();
+}
+
+function renderClients(){
+  const cs = S.clients;
+  const failed = cs.filter(c=>isFailed(c) && !isDelayed(c));
+  const delayed = cs.filter(isDelayed);
+  const paused = cs.filter(c=>(c.status||"").toLowerCase()==="paused");
+  const active = S.queue.filter(r=>r.status==="pending" || (r.status==="running" && Date.now()-new Date(r.started_at||r.requested_at) < 2*3600e3));
+  const name = id => S.clients.find(c=>c.id===id)?.client_display_name || "";
+  $("#main").innerHTML = `
+    ${failed.length?`<div class="banner red"><b>Failed pulls (${failed.length})</b>${failed.map(c=>esc(c.client_display_name)).join(", ")}</div>`:""}
+    ${delayed.length?`<div class="banner blue"><b>Toast data delay — dates held (${delayed.length})</b>${delayed.map(c=>`${esc(c.client_display_name)} <span class="muted">(Toast data to ${esc(c.toast_data_delay_last_update||"?")})</span>`).join(", ")}<div class="small muted">To re-pull: Run Now (the dates advance once Toast has caught up). If the missing time was after the venue closed: open the client and choose "Delay reviewed".</div></div>`:""}
+    ${paused.length?`<div class="banner amber"><b>Paused clients (${paused.length})</b>${paused.map(c=>esc(c.client_display_name)).join(", ")}</div>`:""}
+    ${active.length?`<div class="banner blue"><b>In the queue (${active.length})</b>${active.map(r=>`${esc(reqLabel(r.request_type))}${r.client_id?" — "+esc(name(r.client_id)):""} <span class="muted">(${r.status==="running"?"running":"waiting"})</span>`).join(" · ")}</div>`:""}
+    <div class="bar"><input id="q" placeholder="Search clients" style="max-width:260px"><span class="grow"></span>
+      <button class="b" id="tom">Pull All Files for Tomorrow</button>
+      <button class="b" id="raf">Run All Failed</button>
+      <button class="b primary" id="add">Add client</button></div>
+    <div class="tablewrap"><table><thead><tr><th>Client</th><th>POS</th><th>Cycle</th><th>Last audit</th><th>Next audit</th><th>Sales</th><th>Fintech</th><th>Toast data</th><th>Status</th></tr></thead>
+    <tbody id="rows"></tbody></table></div>
+    <p class="small muted">Refreshes every 60 seconds. Updated ${new Date().toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})}.</p>`;
+  const draw = () => {
+    const t = ($("#q").value||"").toLowerCase();
+    $("#rows").innerHTML = cs.filter(c=>!t || (c.client_display_name||"").toLowerCase().includes(t)).map(c=>`
+      <tr class="${rowClass(c)}" data-id="${c.id}">
+        <td><b>${esc(c.client_display_name)}</b></td>
+        <td>${esc((SOURCES.find(s=>s[0]===c.source_system)||[0,c.source_system])[1])}</td>
+        <td>${esc((CYCLES.find(s=>s[0]===c.audit_cycle)||[0,c.audit_cycle||"—"])[1])}</td>
+        <td class="mono">${fmtDate(c.last_pulled_date)}</td>
+        <td class="mono">${fmtDate(c.next_due_date)}</td>
+        <td>${AUTOMATED.has(c.source_system)?statusTag(c.last_pull_status):'<span class="tag">—</span>'}</td>
+        <td>${hasFintech(c)?statusTag(c.fintech_last_pull_status):'<span class="tag">—</span>'}</td>
+        <td>${c.source_system!=="toast"||!c.toast_data_delay?'<span class="muted">—</span>':c.toast_data_delay==="delayed"?`<span class="tag blue">Delay · ${esc(c.toast_data_delay_last_update||"?")}</span>`:c.toast_data_delay==="realtime"?'<span class="tag green">Current</span>':'<span class="tag">Unknown</span>'}</td>
+        <td>${esc((STATUSES.find(s=>s[0]===(c.status||"").toLowerCase())||[0,c.status])[1])}</td></tr>`).join("");
+    document.querySelectorAll("#rows tr").forEach(tr=>tr.onclick=()=>openEditor(S.clients.find(c=>c.id===tr.dataset.id)));
+  };
+  draw(); $("#q").oninput = draw;
+  $("#add").onclick = ()=>openEditor(null);
+  $("#raf").onclick = ()=>confirmPanel("Run All Failed", `Re-runs every failed client (${failed.length} now: ${failed.map(c=>c.client_display_name).join(", ")||"none"}). Fintech runs first for clients that have it. Starts within about a minute.`, "Run All Failed", async()=>{ await queue({request_type:"run_all_failed"}); });
+  $("#tom").onclick = ()=>{ const t = addDays(todayISO(),1); const due = cs.filter(c=>c.status==="active" && c.next_due_date===t && c.last_pulled_date);
+    confirmPanel("Pull All Files for Tomorrow", `Preview pull for every client whose next audit is ${fmtLong(t)} (${due.length}: ${due.map(c=>c.client_display_name).join(", ")||"none"}). Files only — no dates or statuses change.`, "Pull the files", async()=>{ await queue({request_type:"run_all_tomorrow"}); }); };
+}
+
+const reqLabel = t => ({run_now:"Run Now",run_all_failed:"Run All Failed",run_preview:"Preview pull",run_all_tomorrow:"Pull All Files for Tomorrow"}[t]||t);
+
+function renderQueue(){
+  const name = id => S.clients.find(c=>c.id===id)?.client_display_name || (id?"(deleted client)":"");
+  const st = r => r.status==="completed"?'<span class="tag green">Done</span>':r.status==="failed"?'<span class="tag red">Failed</span>':r.status==="pending"?'<span class="tag amber">Waiting</span>':
+     (Date.now()-new Date(r.started_at||r.requested_at) > 2*3600e3 ? '<span class="tag">Stopped (no finish recorded)</span>' : '<span class="tag blue">Running</span>');
+  $("#main").innerHTML = `<p class="muted">Every button press from the last 3 days. The server checks for new requests every minute.</p>
+   <div class="tablewrap"><table><thead><tr><th>Requested</th><th>What</th><th>Client</th><th>State</th><th>Finished</th><th>Detail</th></tr></thead><tbody>
+   ${S.queue.map(r=>`<tr><td class="mono">${fmtTime(r.requested_at)}</td><td>${esc(reqLabel(r.request_type))}</td><td>${esc(name(r.client_id))}</td><td>${st(r)}</td><td class="mono">${fmtTime(r.completed_at)}</td><td class="small" style="white-space:normal;max-width:380px">${esc(r.error_message||"")}</td></tr>`).join("") || '<tr><td colspan="6" class="muted">Nothing in the last 3 days.</td></tr>'}
+   </tbody></table></div>`;
+}
+
+function renderHistory(){
+  const name = id => S.clients.find(c=>c.id===id)?.client_display_name || "(deleted client)";
+  const opts = [...new Set(S.pulls.map(p=>p.client_id))].map(id=>[id,name(id)]).sort((a,b)=>a[1].localeCompare(b[1]));
+  $("#main").innerHTML = `<div class="bar"><select id="fc" style="max-width:260px"><option value="">All clients</option>${opts.map(([id,n])=>`<option value="${id}">${esc(n)}</option>`).join("")}</select>
+    <select id="ft" style="max-width:200px"><option value="">Every trigger</option><option value="scheduled">5am run</option><option value="manual">Run Now</option><option value="preview">Preview</option></select>
+    <select id="fs" style="max-width:180px"><option value="">Any result</option><option value="succeeded">Succeeded</option><option value="failed">Failed</option><option value="running">Running</option></select>
+    <span class="muted small">Last 21 days</span></div>
+    <div class="tablewrap"><table><thead><tr><th>Run date</th><th>Client</th><th>Trigger</th><th>Dates pulled</th><th>Result</th><th>Detail</th></tr></thead><tbody id="hr"></tbody></table></div>`;
+  const draw = () => {
+    const fc=$("#fc").value, ft=$("#ft").value, fs=$("#fs").value;
+    $("#hr").innerHTML = S.pulls.filter(p=>(!fc||p.client_id===fc)&&(!ft||p.trigger_type===ft)&&(!fs||p.status===fs)).map(p=>`<tr>
+      <td class="mono">${fmtDate(p.run_date)}</td><td>${esc(name(p.client_id))}</td>
+      <td>${esc({scheduled:"5am run",manual:"Run Now",preview:"Preview"}[p.trigger_type]||p.trigger_type)}</td>
+      <td class="mono">${fmtDate(p.pull_start_date)} → ${fmtDate(p.pull_end_date)}</td>
+      <td>${statusTag(p.status)}</td>
+      <td class="small" style="white-space:normal;max-width:420px">${esc(p.error_message || Object.values(p.file_paths||{}).join(", "))}</td></tr>`).join("") || '<tr><td colspan="6" class="muted">No pulls match.</td></tr>';
+  };
+  draw(); ["#fc","#ft","#fs"].forEach(s=>$(s).onchange=draw);
+}
+
+/* ---------- editor ---------- */
+function blankClient(){ return {client_display_name:"",source_system:"toast",login_reference:"",client_pos_id:"",audit_cycle:"weekly",audit_day_of_week:null,custom_cycle_days:null,last_pulled_date:null,next_due_date:null,status:"active",notes:"",fintech_login_reference:null,fintech_client_pos_id:null,fintech_retailer_name:null}; }
+
+function openEditor(c){
+  S.edit = {orig:c, draft:Object.assign(blankClient(), c ? JSON.parse(JSON.stringify(c)) : {}), tab:"schedule", msg:null, review:null};
+  if (S.edit.draft.fintech_login_reference && FINTECH_NONE.has(String(S.edit.draft.fintech_login_reference).toLowerCase())) S.edit.draft.fintech_login_reference = "";
+  drawEditor();
+}
+function closeEditor(){ S.edit=null; document.querySelector(".overlay")?.remove(); }
+
+function field(k, type="text", opts){
+  const v = S.edit.draft[k];
+  if (type==="select") return `<select data-k="${k}">${opts.map(([val,l])=>`<option value="${esc(val)}" ${String(v??"")===String(val)?"selected":""}>${esc(l)}</option>`).join("")}</select>`;
+  if (type==="textarea") return `<textarea data-k="${k}">${esc(v)}</textarea>`;
+  return `<input data-k="${k}" type="${type}" value="${esc(v??"")}">`;
+}
+
+function drawEditor(){
+  const E = S.edit, d = E.draft, c = E.orig;
+  document.querySelector(".overlay")?.remove();
+  const ov = document.createElement("div"); ov.className="overlay";
+  const tabs = c ? [["schedule","Schedule"],["pos","POS"],["fintech","Fintech"],["notes","Notes"],["actions","Actions"],["log","Recent pulls"]] : [["schedule","Schedule"],["pos","POS"],["fintech","Fintech"],["notes","Notes"]];
+  let body = "";
+  if (E.review) body = reviewHTML();
+  else if (E.tab==="schedule") body = `<div class="grid">
+      <div class="full"><label>${LABEL.client_display_name}</label>${field("client_display_name")}</div>
+      <div><label>${LABEL.audit_cycle}</label>${field("audit_cycle","select",CYCLES)}</div>
+      <div><label>${LABEL.audit_day_of_week}</label>${field("audit_day_of_week","select",DAYS.map((n,i)=>[i||"",n||"—"]))}</div>
+      ${d.audit_cycle==="custom"?`<div><label>${LABEL.custom_cycle_days}</label>${field("custom_cycle_days","number")}</div><div></div>`:""}
+      <div><label>${LABEL.last_pulled_date}</label>${field("last_pulled_date","date")}<div class="hint">The day the last audit's sales ended. The next pull starts here.</div></div>
+      <div><label>${LABEL.next_due_date}</label>${field("next_due_date","date")}<div class="hint">The pull runs at 5am on this day.</div></div>
+      <div><label>${LABEL.status}</label>${field("status","select",STATUSES)}<div class="hint">Only Active clients are pulled.</div></div>
+      ${c?`<div><label>Current state</label><div>Sales ${AUTOMATED.has(c.source_system)?statusTag(c.last_pull_status):"—"} &nbsp; Fintech ${hasFintech(c)?statusTag(c.fintech_last_pull_status):"—"}</div></div>`:""}
+    </div>`;
+  else if (E.tab==="pos") body = `<div class="grid">
+      <div class="full"><label>${LABEL.source_system}</label>${field("source_system","select",SOURCES)}${!AUTOMATED.has(d.source_system)?`<div class="hint">No sales pull for this POS. ${hasFintech(d)?"Fintech runs on the audit date and advances the dates.":"Add a Fintech login, or nothing runs for this client."}</div>`:""}</div>
+      ${AUTOMATED.has(d.source_system)||d.source_system==="silverware"?`<div class="full"><label>${LABEL.login_reference}</label>${field("login_reference")}<div class="hint">The 1Password item name, e.g. "Toast - Miami@ Login (17 clients)".</div></div>
+      <div class="full"><label>${LABEL.client_pos_id}</label>${field("client_pos_id")}<div class="hint">The venue exactly as the POS names it (Toast restaurant name), or "single client login".</div></div>`:""}
+    </div>`;
+  else if (E.tab==="fintech") body = `<div class="grid">
+      <div class="full"><label>${LABEL.fintech_login_reference}</label>${field("fintech_login_reference")}<div class="hint">The 1Password item, e.g. "Fintech - Miami@Barmetrix.com". Leave blank (or type None) when the client has no Fintech.</div></div>
+      <div class="full"><label>${LABEL.fintech_client_pos_id}</label>${field("fintech_client_pos_id")}<div class="hint">The company name Fintech shows when choosing a venue (new portal).</div></div>
+      <div class="full"><label>${LABEL.fintech_retailer_name}</label>${field("fintech_retailer_name")}<div class="hint">Only for a login that covers several venues on the old portal: the retailer name in column B.</div></div>
+    </div>`;
+  else if (E.tab==="notes") body = `<label>${LABEL.notes}</label>${field("notes","textarea")}`;
+  else if (E.tab==="actions") body = actionsHTML();
+  else if (E.tab==="log") body = `<div id="clog" class="muted">Loading…</div>`;
+
+  ov.innerHTML = `<div class="drawer" role="dialog" aria-modal="true">
+    <div class="hd"><h2>${c?esc(c.client_display_name):"Add client"}</h2>
+      ${c?`<div class="muted small">Next audit ${fmtLong(c.next_due_date)} · last audit ${fmtLong(c.last_pulled_date)}</div>`:""}</div>
+    ${E.review?"":`<div class="tabs">${tabs.map(([k,l])=>`<button data-t="${k}" class="${E.tab===k?"on":""}">${l}</button>`).join("")}</div>`}
+    <div class="body">${E.msg?`<div class="msg ${E.msg.kind}">${E.msg.html}</div>`:""}${body}</div>
+    <div class="ft">${E.review?`<button class="b big" id="back">Back to editing</button><span class="grow"></span><button class="b primary big" id="confirm">${esc(E.review.label)}</button>`
+      :`<button class="b big" id="cancel">Cancel</button><span class="grow"></span>${c?`<button class="b big" id="saverun">Save + Run Now</button>`:""}<button class="b primary big" id="save">${c?"Save":"Add client"}</button>`}</div></div>`;
+  document.body.appendChild(ov);
+  ov.addEventListener("mousedown", e=>{ if(e.target===ov && !E.review) closeEditor(); });
+  ov.querySelectorAll("[data-k]").forEach(el=>{ el.oninput = el.onchange = ()=>{ let val = el.value; const k = el.dataset.k;
+    if (k==="audit_day_of_week"||k==="custom_cycle_days") val = val===""?null:parseInt(val);
+    d[k] = val; if (k==="audit_cycle"||k==="source_system") { E.msg=null; drawEditor(); } }; });
+  ov.querySelectorAll("[data-t]").forEach(b=>b.onclick=()=>{ E.tab=b.dataset.t; E.msg=null; drawEditor(); });
+  if (E.review){ $("#back").onclick=()=>{ E.review=null; drawEditor(); }; $("#confirm").onclick=()=>E.review.run(); }
+  else { $("#cancel").onclick=closeEditor; $("#save").onclick=()=>startSave(false); if(c) $("#saverun").onclick=()=>startSave(true); }
+  if (E.tab==="actions" && !E.review) wireActions();
+  if (E.tab==="log" && !E.review) loadClientLog();
+}
+
+/* field checks: hard errors block the save; warnings are shown in the review */
+function normalize(d){
+  const o = {};
+  for (const k of EDIT_FIELDS){
+    let v = d[k];
+    if (typeof v==="string") v = v.trim().replace(/^"+|"+$/g,"").trim();
+    if (v==="" ) v = null;
+    o[k]=v;
+  }
+  if (o.fintech_login_reference && FINTECH_NONE.has(o.fintech_login_reference.toLowerCase())) o.fintech_login_reference = null;
+  if (!o.fintech_login_reference) { o.fintech_client_pos_id = o.fintech_client_pos_id || null; }
+  o.status = (o.status||"active").toLowerCase();
+  o.source_system = (o.source_system||"").toLowerCase();
+  o.notes = o.notes || "";
+  if (o.audit_cycle!=="custom") o.custom_cycle_days = null;
+  return o;
+}
+function check(o){
+  const errs=[], warns=[]; const pre = POS_PREFIX[o.source_system];
+  const looksLogin = s => /^(toast|spoton|mstarpos|mstar|square|silverware|fintech)\s*-/i.test(s||"");
+  if (!o.client_display_name) errs.push("Client name is empty.");
+  if (S.clients.some(c=>c.id!==S.edit.orig?.id && (c.client_display_name||"").toLowerCase()===(o.client_display_name||"").toLowerCase())) errs.push(`Another client is already called "${o.client_display_name}".`);
+  if (!o.source_system) errs.push("Choose a POS.");
+  if (AUTOMATED.has(o.source_system)){
+    if (!o.login_reference) errs.push("POS login is empty — the pull cannot log in.");
+    if (!o.client_pos_id) errs.push("POS venue name is empty — the pull cannot pick the venue.");
+    if (o.login_reference && !looksLogin(o.login_reference)) errs.push(`POS login "${o.login_reference}" doesn't look like a 1Password item (they start "${pre} - ").${looksLogin(o.client_pos_id)?" It looks like the POS login and the venue name are swapped.":""}`);
+    else if (o.login_reference && pre && !o.login_reference.toLowerCase().startsWith(pre.toLowerCase())) errs.push(`POS login "${o.login_reference}" is not a ${pre} login, but the POS is ${pre}.`);
+    if (o.client_pos_id && looksLogin(o.client_pos_id)) errs.push(`POS venue name "${o.client_pos_id}" looks like a 1Password login, not a venue.`);
+  }
+  if (!AUTOMATED.has(o.source_system) && !o.fintech_login_reference) warns.push("This client has no automated POS and no Fintech login, so nothing will be pulled and the dates will not move.");
+  if (o.fintech_login_reference && !/^fintech\s*-/i.test(o.fintech_login_reference)) errs.push(`Fintech login "${o.fintech_login_reference}" doesn't look like a Fintech 1Password item (they start "Fintech - ").`);
+  if (o.fintech_client_pos_id && looksLogin(o.fintech_client_pos_id)) errs.push(`Fintech venue name "${o.fintech_client_pos_id}" looks like a 1Password login, not a venue.`);
+  if (o.fintech_retailer_name && looksLogin(o.fintech_retailer_name)) errs.push(`Fintech retailer name "${o.fintech_retailer_name}" looks like a 1Password login.`);
+  if (o.audit_cycle==="custom" && !(o.custom_cycle_days>0)) errs.push("A custom cycle needs the number of days.");
+  if (o.status==="active"){
+    if (!o.last_pulled_date) errs.push("An active client needs a last audit date (the pull starts there).");
+    if (!o.next_due_date) errs.push("An active client needs a next audit date.");
+  }
+  if (o.last_pulled_date && o.next_due_date && o.next_due_date <= o.last_pulled_date) errs.push("Next audit date must be after the last audit date.");
+  if (o.last_pulled_date && o.last_pulled_date > todayISO()) errs.push("Last audit date can't be in the future.");
+  const cd = cycleDays(o.audit_cycle,o.custom_cycle_days);
+  if (cd && o.last_pulled_date && o.next_due_date){ const gap = (new Date(o.next_due_date)-new Date(o.last_pulled_date))/864e5; if (gap!==cd) warns.push(`The gap between the two dates is ${gap} days; the cycle is ${cd}. Fine for a one-off, just confirming.`); }
+  if (o.next_due_date && o.next_due_date < todayISO() && o.status==="active") warns.push("Next audit date is in the past — the 5am run will not pick it up. Use Run Now after saving.");
+  return {errs,warns};
+}
+function changes(o){
+  const orig = S.edit.orig; const out=[];
+  for (const k of EDIT_FIELDS){
+    const a = orig ? (orig[k]??null) : null, b = o[k]??null;
+    const na = (a===""?null:a), nb=(b===""?null:b);
+    if (String(na??"")!==String(nb??"")) out.push([k,na,nb]);
+  }
+  return out;
+}
+const pick = (list,v) => (list.find(x=>x[0]===v)||[0,v])[1];
+const showVal = (k,v) => v===null||v===undefined||v==="" ? "(empty)" : /date/.test(k)?fmtLong(v):k==="audit_day_of_week"?DAYS[v]||v
+  : k==="source_system"?pick(SOURCES,v):k==="audit_cycle"?pick(CYCLES,v):k==="status"?pick(STATUSES,v):String(v);
+
+function startSave(andRun){
+  const o = normalize(S.edit.draft); const {errs,warns} = check(o);
+  if (errs.length){ S.edit.msg={kind:"err",html:"<b>Not saved — fix these first:</b><ul>"+errs.map(e=>`<li>${esc(e)}</li>`).join("")+"</ul>"}; drawEditor(); return; }
+  const ch = changes(o);
+  if (!ch.length && !andRun){ closeEditor(); toast("No changes."); return; }
+  S.edit.review = {label: S.edit.orig ? (andRun?"Save and run now":"Save changes") : "Add client", o, ch, warns, andRun,
+    run: ()=>doSave(o, ch, andRun)};
+  drawEditor();
+}
+function reviewHTML(){
+  const R = S.edit.review;
+  return `<h3 style="margin-top:0">${S.edit.orig?"Check the changes":"Check the new client"}</h3>
+   ${R.ch.length?`<div class="diff">${R.ch.map(([k,a,b])=>`<div><b>${esc(LABEL[k])}:</b> ${S.edit.orig?`<del>${esc(showVal(k,a))}</del> → `:""}<ins>${esc(showVal(k,b))}</ins></div>`).join("")}</div>`:`<p class="muted">No field changes.</p>`}
+   ${R.warns.map(w=>`<div class="msg info">${esc(w)}</div>`).join("")}
+   ${R.andRun?`<div class="msg info">After saving, a Run Now is queued for this client. ${hasFintech(R.o)&&AUTOMATED.has(R.o.source_system)?"Fintech runs first, then the POS.":""} It starts within about a minute.</div>`:""}`;
+}
+async function doSave(o, ch, andRun){
+  const btn = $("#confirm"); btn.disabled=true; btn.textContent="Saving…";
+  try{
+    let id = S.edit.orig?.id;
+    if (id){
+      const patch = Object.fromEntries(ch.map(([k,,b])=>[k,b]));
+      if (Object.keys(patch).length){ const r = await sb.from("clients").update(patch).eq("id",id).select("id"); if (r.error) throw r.error; if (!r.data?.length) throw new Error("The save did not reach the database (no row updated)."); }
+    } else {
+      const r = await sb.from("clients").insert(Object.assign(o,{last_pull_status:"never_attempted"})).select("id"); if (r.error) throw r.error; id = r.data[0].id;
+    }
+    if (andRun){ await queue({request_type:"run_now", client_id:id, source_system:o.source_system}, true); }
+    closeEditor(); await refresh(); toast(andRun?"Saved, and Run Now queued — starts within a minute.":"Saved.");
+  } catch(e){ S.edit.review=null; S.edit.msg={kind:"err",html:`<b>${andRun?"Not saved — run NOT queued.":"Not saved."}</b> ${esc(e.message||e)}`}; drawEditor(); }
+}
+
+/* ---------- client actions ---------- */
+function actionsHTML(){
+  const c = S.edit.orig; const failed = isFailed(c), delayed = isDelayed(c);
+  const cd = cycleDays(c.audit_cycle,c.custom_cycle_days);
+  return `<div class="actions">
+    <div class="row"><p><b>Run Now</b><br><span class="muted small">Pulls ${fmtLong(c.last_pulled_date)} → ${fmtLong(c.next_due_date)} and, on success, advances the dates. Uses the saved details (unsaved edits are ignored — use Save + Run Now for those).</span></p><button class="b primary" id="a-run">Run Now</button></div>
+    <div class="row"><p><b>Pull next audit's files</b><br><span class="muted small">Preview: pulls ${fmtLong(c.last_pulled_date)} → today into the client's Preview folder. Dates and statuses never change.</span></p><button class="b" id="a-prev">Pull preview</button></div>
+    ${delayed?`<div class="row"><p><b>Delay reviewed</b><br><span class="muted small">Toast's data only ran to ${esc(c.toast_data_delay_last_update||"?")}. If this client was closed by then, the files are complete: this advances the dates (to ${fmtLong(c.next_due_date)} → ${cd?fmtLong(addDays(c.next_due_date,cd)):"?"}) and records that a person reviewed the delay.</span></p><button class="b warn" id="a-delay">Delay reviewed</button></div>`:""}
+    ${failed||delayed?`<div class="row"><p><b>Mark as Manually Resolved</b><br><span class="muted small">For a pull the team completed by hand. Advances the dates (last audit becomes ${fmtLong(c.next_due_date)}, next audit ${cd?fmtLong(addDays(c.next_due_date,cd)):"?"}) and clears the failure.</span></p><button class="b warn" id="a-res">Mark resolved</button></div>`:""}
+    <div class="row"><p><b>Delete client</b><br><span class="muted small">Removes the client from this list and from every pull. Pull history is kept.</span></p><button class="b danger" id="a-del">Delete</button></div>
+  </div>`;
+}
+function wireActions(){
+  const c = S.edit.orig;
+  $("#a-run").onclick = ()=>actionConfirm("Run Now", `Queue a pull for ${c.client_display_name}?`, "Queue Run Now", async()=>{ await queue({request_type:"run_now",client_id:c.id,source_system:c.source_system}); });
+  $("#a-prev").onclick = ()=>actionConfirm("Pull next audit's files", `Preview pull for ${c.client_display_name}, ${fmtLong(c.last_pulled_date)} → today. No dates change.`, "Pull preview", async()=>{ await queue({request_type:"run_preview",client_id:c.id,source_system:c.source_system}); });
+  const res = async (reviewed)=>{
+    const cd = cycleDays(c.audit_cycle,c.custom_cycle_days); if (!cd || !c.next_due_date) throw new Error("This client's audit cycle has no length, so the next date can't be worked out. Edit the dates instead.");
+    const body = {last_pulled_date:c.next_due_date, next_due_date:addDays(c.next_due_date,cd), last_pull_status:"succeeded",
+      fintech_last_pull_status: (c.fintech_last_pull_status||"").toLowerCase()==="failed" ? "succeeded" : (c.fintech_last_pull_status ?? null)};
+    if (S.hasDelayCols && reviewed) body.delay_reviewed_at = new Date().toISOString();
+    if (S.hasDelayCols && c.toast_data_delay==="delayed") body.toast_data_delay = "reviewed";
+    const r = await sb.from("clients").update(body).eq("id",c.id).eq("next_due_date",c.next_due_date).select("id");
+    if (r.error) throw r.error; if (!r.data?.length) throw new Error("The client changed since this page loaded — nothing was changed. Close and reopen it.");
+  };
+  if ($("#a-res")) $("#a-res").onclick = ()=>actionConfirm("Mark as Manually Resolved", `Advance ${c.client_display_name}'s dates and clear the failure? This can't be undone from here (the dates can be edited back by hand).`, "Mark resolved", ()=>res(false));
+  if ($("#a-delay")) $("#a-delay").onclick = ()=>actionConfirm("Delay reviewed", `Confirm Toast's delay doesn't matter for ${c.client_display_name} and advance the dates?`, "Delay reviewed — advance dates", ()=>res(true));
+  $("#a-del").onclick = ()=>actionConfirm("Delete client", `Delete ${c.client_display_name}? It disappears from this list and is never pulled again. Pull history is kept.`, "Delete client", async()=>{
+    const r = await sb.from("clients").update({deleted_at:new Date().toISOString()}).eq("id",c.id).select("id"); if (r.error) throw r.error; if(!r.data?.length) throw new Error("Nothing was deleted."); });
+}
+function actionConfirm(title, text, label, fn){
+  S.edit.review = {label, o:null, ch:[], warns:[], run: async()=>{ const b=$("#confirm"); b.disabled=true; b.textContent="Working…";
+      try { await fn(); closeEditor(); await refresh(); toast(title+" — done."); }
+      catch(e){ S.edit.review=null; S.edit.msg={kind:"err",html:`<b>${esc(title)} did not happen.</b> ${esc(e.message||e)}`}; drawEditor(); } }};
+  drawEditor(); document.querySelector(".body").innerHTML = `<h3 style="margin-top:0">${esc(title)}</h3><p>${esc(text)}</p>`;
+}
+function confirmPanel(title, text, label, fn){
+  S.edit = {orig:null, draft:blankClient(), tab:"schedule", msg:null, review:null};
+  actionConfirm(title, text, label, fn);
+  document.querySelector(".hd").innerHTML = `<h2>${esc(title)}</h2>`;
+}
+async function loadClientLog(){
+  const c = S.edit.orig;
+  const r = await sb.from("data_pulls").select("run_date,trigger_type,status,pull_start_date,pull_end_date,error_message,report_type").eq("client_id",c.id).order("started_at",{ascending:false}).limit(12);
+  const el = $("#clog"); if (!el) return;
+  if (r.error){ el.textContent = r.error.message; return; }
+  el.classList.remove("muted");
+  el.innerHTML = r.data.length ? `<div class="tablewrap"><table style="min-width:0"><thead><tr><th>Run</th><th>Trigger</th><th>Dates</th><th>Result</th></tr></thead><tbody>${r.data.map(p=>`<tr><td class="mono">${fmtDate(p.run_date)}</td><td>${esc({scheduled:"5am",manual:"Run Now",preview:"Preview"}[p.trigger_type]||p.trigger_type)}</td><td class="mono small">${fmtDate(p.pull_start_date)} → ${fmtDate(p.pull_end_date)}</td><td>${statusTag(p.status)}${p.error_message?`<div class="small" style="white-space:normal">${esc(p.error_message)}</div>`:""}</td></tr>`).join("")}</tbody></table></div>` : "No pulls recorded yet.";
+}
+
+/* one request per click, and never a second identical one while the first is waiting */
+async function queue(row, quiet){
+  let dup = sb.from("run_requests").select("id").eq("status","pending").eq("request_type",row.request_type);
+  dup = row.client_id ? dup.eq("client_id",row.client_id) : dup.is("client_id",null);
+  const d = await dup; if (d.error) throw d.error;
+  if (d.data.length){ if(!quiet) toast("Already waiting in the queue — not added twice."); return; }
+  const r = await sb.from("run_requests").insert(Object.assign({status:"pending"},row)).select("id");
+  if (r.error) throw r.error;
+  if (!quiet) toast(reqLabel(row.request_type)+" queued — starts within a minute.");
+}
+function toast(t){ const el=document.createElement("div"); el.className="toast"; el.textContent=t; document.body.appendChild(el); setTimeout(()=>el.remove(),4500); }
+document.addEventListener("keydown", e=>{ if(e.key==="Escape" && S.edit && !S.edit.review) closeEditor(); });
+boot();
+</script>
+</body>
+</html>
