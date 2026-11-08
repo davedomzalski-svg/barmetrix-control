@@ -156,10 +156,10 @@ async function loadPulls(){
   S.pulls = q.data;
 }
 async function refresh(quiet){
-  try { await Promise.all([loadClients(), loadQueue()]); if (S.view==="history") await loadPulls(); render(); }
+  try { await Promise.all([loadClients(), loadQueue(), loadMapping().catch(()=>{})]); if (S.view==="history") await loadPulls(); render(); }
   catch(e){ if(!quiet) toast("Could not load: "+(e.message||e)); }
 }
-function startTimer(){ clearInterval(S.timer); S.timer = setInterval(()=>{ if(!S.edit && document.visibilityState==="visible") refresh(true); }, 60000); }
+function startTimer(){ clearInterval(S.timer); S.timer = setInterval(()=>{ if(!S.edit && !M.other && !M.flag && !(S.view==="mapping" && M.tab==="hist") && document.visibilityState==="visible") refresh(true); }, 60000); }
 
 /* ---------- auth ---------- */
 async function boot(){
@@ -187,12 +187,155 @@ function render(){
   if (!S.user) return;
   const v = S.view;
   $("#app").innerHTML = `<header><h1>Barmetrix File Pulls</h1>
-    <nav>${[["clients","Clients"],["queue","Run queue"],["history","Pull history"]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
+    <nav>${[["clients","Clients"],["mapping",`Mapping${M.open.length?` <span class="tag amber">${M.open.length}</span>`:""}`],["queue","Run queue"],["history","Pull history"]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
     <div class="who"><span>${esc(S.user.email)}</span><button class="b" id="out">Sign out</button></div></header>
     <main id="main"></main>`;
-  document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); render(); });
+  document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); if(S.view==="mapping") await loadMapping().catch(e=>toast(e.message)); render(); });
   $("#out").onclick = ()=>sb.auth.signOut();
-  if (v==="clients") renderClients(); else if (v==="queue") renderQueue(); else renderHistory();
+  if (v==="clients") renderClients(); else if (v==="mapping") renderMapping(); else if (v==="queue") renderQueue(); else renderHistory();
+}
+
+/* ---------- mapping review ---------- */
+const M = {open:[], done:[], ready:true, err:null, tab:"open", venue:"", from:addDays(todayISO(),-7), to:todayISO(), q:"", other:null, hist:null};
+const KIND = {mapped:"Mapped", trashed:"Trashed", decide:"Mapping to check", stuck:"No suggestion yet", trash:"Trash suggestion",
+  fix:"Recipe / size fix", invoice:"Invoice line", unmapped:"Waiting for the count"};
+const kindTag = k => `<span class="tag ${k==="trash"||k==="trashed"?"":k==="fix"?"blue":k==="stuck"?"red":"amber"}">${esc(KIND[k]||k)}</span>`;
+const pct = c => c==null||c==="" ? "—" : Math.round(Number(c)*100)+"%";
+const ITEM_COLS = "id,venue,kind,title,suggestion,reason,target,size_type,delta_oz,bottle_ml,confidence,status,choice,other_text,decided_by,decided_at,decided_note,applied_at,applied_detail,created_at";
+
+async function loadMapping(){
+  const o = await sb.from("mapping_items").select(ITEM_COLS).eq("status","open").order("venue").order("created_at").limit(1000);
+  if (o.error){ M.ready = !/relation|does not exist|schema cache/i.test(o.error.message); M.err = o.error.message; if (!M.ready) return; throw o.error; }
+  M.ready = true; M.err = null; M.open = o.data;
+  const d = await sb.from("mapping_items").select(ITEM_COLS).in("status",["robot","applied","failed"])
+    .gte("applied_at", M.from+"T00:00:00").lte("applied_at", M.to+"T23:59:59").order("applied_at",{ascending:false}).limit(2000);
+  if (d.error) throw d.error; M.done = d.data;
+}
+
+function renderMapping(){
+  if (!M.ready){ $("#main").innerHTML = `<div class="msg info"><b>Mapping review isn't switched on in the database yet.</b> Run "STEP 4 - SUPABASE - mapping review" (Google Drive → My Drive → Barmetrix Automation) in the Supabase SQL Editor, then reload this page.</div>`; return; }
+  const tabs = [["open",`Needs a person (${M.open.length})`],["done","Mapped by the robot"],["hist","History"]];
+  $("#main").innerHTML = `<div class="tabs" style="padding:0;margin:0 0 14px">${tabs.map(([k,l])=>`<button data-mt="${k}" class="${M.tab===k?"on":""}">${l}</button>`).join("")}</div><div id="mbody"></div>`;
+  document.querySelectorAll("[data-mt]").forEach(b=>b.onclick=()=>{ M.tab=b.dataset.mt; M.other=null; renderMapping(); });
+  if (M.tab==="open") mapOpen(); else if (M.tab==="done") mapDone(); else mapHist();
+}
+
+function venueSelect(list){
+  const vs = [...new Set(list.map(i=>i.venue))].sort();
+  if (M.venue && !vs.includes(M.venue)) vs.unshift(M.venue);
+  return `<select id="mv" style="max-width:260px"><option value="">All venues</option>${vs.map(v=>`<option ${v===M.venue?"selected":""}>${esc(v)}</option>`).join("")}</select>`;
+}
+
+function mapOpen(){
+  const items = M.open.filter(i=>!M.venue || i.venue===M.venue);
+  const byVenue = {}; items.forEach(i=>(byVenue[i.venue] ||= []).push(i));
+  $("#mbody").innerHTML = `<div class="bar">${venueSelect(M.open)}<span class="grow"></span><span class="muted small">Approve sends it to the robot. Reject leaves it alone and stops it being suggested again. Something else: say what it should be.</span></div>
+    ${items.length ? Object.entries(byVenue).map(([v,list])=>`<h3 style="margin:18px 0 8px">${esc(v)} <span class="muted small">${list.length}</span></h3>
+      <div class="actions">${list.map(cardHTML).join("")}</div>`).join("") : `<div class="center" style="min-height:30vh"><b>Nothing needs a person right now.</b><span class="muted">New items appear here after each mapping run.</span></div>`}`;
+  $("#mv").onchange = e=>{ M.venue=e.target.value; mapOpen(); };
+  wireCards();
+}
+function cardHTML(i){
+  const other = M.other===i.id;
+  return `<div class="row" data-id="${esc(i.id)}" style="flex-wrap:wrap">
+    <p style="min-width:260px"><b>${esc(i.title)}</b> &nbsp;${kindTag(i.kind)}<br>
+      <span>${esc(i.suggestion||"")}</span>${i.confidence!=null?` <span class="muted small">· ${pct(i.confidence)} sure</span>`:""}<br>
+      <span class="muted small" style="white-space:normal">${esc(i.reason||"")}</span></p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
+      ${i.kind==="unmapped"?`<button class="b" data-a="noted">Noted</button><button class="b" data-a="other">Something else</button>`
+        :i.kind==="stuck"?`<button class="b primary" data-a="other">Tell it what this is</button><button class="b" data-a="reject">Leave it unmapped</button>`
+        :i.kind==="trash"?`<button class="b primary" data-a="approve">Trash it</button><button class="b" data-a="reject">Don't trash</button><button class="b" data-a="other">Something else</button>`
+        :`<button class="b primary" data-a="approve">Approve</button><button class="b" data-a="reject">Reject</button><button class="b" data-a="other">Something else</button>`}</div>
+    ${other?`<div style="flex-basis:100%"><label>What should it be?</label><textarea id="ot" placeholder="e.g. Map to Tito's Vodka, 1.5 oz pour — or: trash it"></textarea>
+      <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-a="other-save">Save</button><button class="b" data-a="other-cancel">Cancel</button></div></div>`:""}
+  </div>`;
+}
+function wireCards(){
+  document.querySelectorAll("#mbody .row[data-id]").forEach(row=>{
+    const id = row.dataset.id;
+    row.querySelectorAll("[data-a]").forEach(b=>b.onclick=async()=>{
+      const a = b.dataset.a;
+      if (a==="other"){ M.other=id; mapOpen(); $("#ot")?.focus(); return; }
+      if (a==="other-cancel"){ M.other=null; mapOpen(); return; }
+      let patch = {status:"decided", choice:a, decided_by:S.user.email, decided_at:new Date().toISOString(), updated_at:new Date().toISOString()};
+      if (a==="other-save"){ const t = ($("#ot").value||"").trim(); if (!t){ toast("Write what it should be first."); return; } patch.choice="other"; patch.other_text=t; }
+      b.disabled = true;
+      const r = await sb.from("mapping_items").update(patch).eq("id",id).eq("status","open").select("id");
+      if (r.error){ toast("Not saved: "+r.error.message); b.disabled=false; return; }
+      if (!r.data?.length){ toast("Someone already decided this one."); }
+      else toast({approve:"Approved — the robot does it on its next run.",reject:"Rejected — it won't be suggested again.",noted:"Noted.","other-save":"Saved — it'll be handled on the next run."}[a]);
+      M.other=null; M.open = M.open.filter(x=>x.id!==id); render();
+    });
+  });
+}
+
+function mapDone(){
+  $("#mbody").innerHTML = `<div class="bar">${venueSelect(M.done)}
+      <label style="margin:0">From</label><input type="date" id="mf" value="${M.from}" style="max-width:170px">
+      <label style="margin:0">To</label><input type="date" id="mt" value="${M.to}" style="max-width:170px">
+      <input id="mq" placeholder="Search button or product" value="${esc(M.q)}" style="max-width:240px">
+      <span class="grow"></span><span class="muted small" id="mcount"></span></div>
+    <div class="tablewrap"><table><thead><tr><th>When</th><th>Venue</th><th>POS button</th><th>What the robot did</th><th>Sure</th><th>Why</th><th></th></tr></thead><tbody id="mrows"></tbody></table></div>`;
+  const draw = ()=>{
+    const t = M.q.toLowerCase();
+    const list = M.done.filter(i=>(!M.venue||i.venue===M.venue) && (!t || (i.title+" "+(i.suggestion||"")+" "+(i.target||"")).toLowerCase().includes(t)));
+    $("#mcount").textContent = `${list.length} item${list.length===1?"":"s"}`;
+    $("#mrows").innerHTML = list.map(i=>`<tr data-id="${esc(i.id)}" style="cursor:default">
+      <td class="mono">${fmtTime(i.applied_at)}</td><td>${esc(i.venue)}</td><td><b>${esc(i.title)}</b></td>
+      <td>${i.status==="failed"?'<span class="tag red">Failed</span> ':""}${esc(i.suggestion||i.applied_detail||"")}${i.choice==="wrong"?` <span class="tag red">Flagged: ${esc(i.other_text||"")}</span>`:""}${i.decided_by&&i.choice==="approve"?` <span class="muted small">· approved by ${esc(i.decided_by.split("@")[0])}</span>`:""}</td>
+      <td>${pct(i.confidence)}</td><td class="small" style="white-space:normal;max-width:360px">${esc(i.reason||"")}</td>
+      <td>${i.choice==="wrong"||i.status==="failed"?"":`<button class="b" data-w="${esc(i.id)}">Wrong — fix it</button>`}</td></tr>`).join("") ||
+      `<tr><td colspan="7" class="muted">Nothing mapped by the robot in these dates.</td></tr>`;
+    document.querySelectorAll("[data-w]").forEach(b=>b.onclick=()=>flagWrong(M.done.find(i=>i.id===b.dataset.w)));
+  };
+  draw();
+  $("#mv").onchange = e=>{ M.venue=e.target.value; draw(); };
+  $("#mq").oninput = e=>{ M.q=e.target.value; draw(); };
+  const redate = async()=>{ M.from=$("#mf").value||M.from; M.to=$("#mt").value||M.to; try{ await loadMapping(); }catch(e){ toast(e.message); } mapDone(); };
+  $("#mf").onchange = redate; $("#mt").onchange = redate;
+}
+function flagWrong(i){
+  M.flag = i.id;
+  const ov = document.createElement("div"); ov.className="overlay";
+  ov.innerHTML = `<div class="drawer" role="dialog" aria-modal="true">
+    <div class="hd"><h2>Wrong mapping</h2><div class="muted small">${esc(i.venue)}</div></div>
+    <div class="body"><div id="wm"></div><p><b>${esc(i.title)}</b><br>The robot did: ${esc(i.suggestion||"")}</p>
+      <label>What should it be?</label><textarea id="wt" placeholder="e.g. Should be Don Julio Reposado, not Blanco — or: should be trashed"></textarea>
+      <p class="hint">The robot removes the wrong mapping and puts the right one in on its next run. Your correction is also kept so it doesn't make the same mistake again.</p></div>
+    <div class="ft"><button class="b big" id="wc">Cancel</button><span class="grow"></span><button class="b primary big" id="ws">Send the fix</button></div></div>`;
+  document.body.appendChild(ov);
+  const close = ()=>{ ov.remove(); M.flag=null; };
+  ov.addEventListener("mousedown", e=>{ if(e.target===ov) close(); });
+  $("#wc").onclick = close; $("#wt").focus();
+  $("#ws").onclick = async()=>{
+    const t = ($("#wt").value||"").trim();
+    if (!t){ $("#wm").innerHTML = `<div class="msg err">Write what it should be first.</div>`; return; }
+    $("#ws").disabled = true;
+    const r = await sb.from("mapping_items").update({choice:"wrong", other_text:t, decided_by:S.user.email, decided_at:new Date().toISOString(), updated_at:new Date().toISOString()}).eq("id",i.id).select("id");
+    if (r.error || !r.data?.length){ $("#ws").disabled=false; $("#wm").innerHTML = `<div class="msg err">Not saved: ${esc(r.error?.message||"no row updated")}</div>`; return; }
+    close(); toast("Sent — the robot fixes it on its next run."); await loadMapping().catch(()=>{}); renderMapping();
+  };
+}
+
+async function mapHist(){
+  $("#mbody").innerHTML = `<div class="bar"><input id="hq" placeholder="Search any button, product or venue" value="${esc(M.q)}" style="max-width:360px"><span class="muted small">Every decision and every robot mapping, newest first.</span></div><div id="hres" class="muted">Loading…</div>`;
+  const run = async()=>{
+    const t = ($("#hq").value||"").trim(); M.q = t;
+    let q = sb.from("mapping_items").select(ITEM_COLS).neq("status","open").order("updated_at",{ascending:false}).limit(300);
+    if (t){ const s = t.replace(/[%,()]/g," "); q = q.or(`title.ilike.%${s}%,suggestion.ilike.%${s}%,venue.ilike.%${s}%,other_text.ilike.%${s}%`); }
+    const r = await q; const el = $("#hres"); if (!el) return;
+    if (r.error){ el.textContent = r.error.message; return; }
+    el.classList.remove("muted");
+    const who = i => i.decided_by ? i.decided_by.split("@")[0] : i.decided_note ? i.decided_note : (i.status==="robot"?"robot":"");
+    const what = i => ({approve:"Approved",reject:"Rejected",other:"Changed: "+(i.other_text||""),wrong:"Flagged wrong: "+(i.other_text||""),noted:"Noted"}[i.choice] || (i.status==="robot"?"Done by the robot":i.status));
+    el.innerHTML = `<div class="tablewrap"><table><thead><tr><th>Venue</th><th>Item</th><th>Type</th><th>Suggestion</th><th>Decision</th><th>Who</th><th>When</th><th>Result</th></tr></thead><tbody>
+      ${r.data.map(i=>`<tr style="cursor:default"><td>${esc(i.venue)}</td><td><b>${esc(i.title)}</b></td><td>${kindTag(i.kind)}</td><td class="small" style="white-space:normal;max-width:280px">${esc(i.suggestion||"")}</td>
+        <td class="small" style="white-space:normal;max-width:220px">${esc(what(i))}</td><td class="small">${esc(who(i))}</td><td class="mono small">${fmtTime(i.decided_at||i.applied_at||i.created_at)}</td>
+        <td class="small" style="white-space:normal;max-width:240px">${esc(i.applied_detail||(i.status==="decided"?"Waiting for the robot's next run":""))}</td></tr>`).join("") || '<tr><td colspan="8" class="muted">Nothing found.</td></tr>'}
+      </tbody></table></div>`;
+  };
+  let tm; $("#hq").oninput = ()=>{ clearTimeout(tm); tm = setTimeout(run, 350); };
+  run();
 }
 
 function renderClients(){
