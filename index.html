@@ -114,9 +114,10 @@ const STATUSES = [["active","Active"],["paused","Paused"],["onboarding","Onboard
 const DAYS = ["","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 const FINTECH_NONE = new Set(["","no","none","no fintech"]);
 const EDIT_FIELDS = ["client_display_name","source_system","login_reference","client_pos_id","audit_cycle","audit_day_of_week","custom_cycle_days","last_pulled_date","next_due_date","status","notes","fintech_login_reference","fintech_client_pos_id","fintech_retailer_name"];
-const LABEL = {client_display_name:"Client name",source_system:"POS",login_reference:"POS login (1Password item)",client_pos_id:"POS venue name / ID",audit_cycle:"Audit cycle",audit_day_of_week:"Audit day",custom_cycle_days:"Custom cycle days",last_pulled_date:"Last audit date",next_due_date:"Next audit date",status:"Client status",notes:"Notes",fintech_login_reference:"Fintech login (1Password item)",fintech_client_pos_id:"Fintech venue name",fintech_retailer_name:"Fintech retailer name"};
+const editFields = () => S.hasMapCols ? EDIT_FIELDS.concat(["map_enabled","map_machine","map_machine_picked","pilot_name"]) : EDIT_FIELDS;
+const LABEL = {map_enabled:"Map this client",map_machine:"Mapping machine",map_machine_picked:"Machine chosen by a person",pilot_name:"Name in Pilot",client_display_name:"Client name",source_system:"POS",login_reference:"POS login (1Password item)",client_pos_id:"POS venue name / ID",audit_cycle:"Audit cycle",audit_day_of_week:"Audit day",custom_cycle_days:"Custom cycle days",last_pulled_date:"Last audit date",next_due_date:"Next audit date",status:"Client status",notes:"Notes",fintech_login_reference:"Fintech login (1Password item)",fintech_client_pos_id:"Fintech venue name",fintech_retailer_name:"Fintech retailer name"};
 
-let S = {user:null, view:"clients", clients:[], queue:[], pulls:[], hasDelayCols:true, timer:null, edit:null};
+let S = {user:null, view:"clients", clients:[], queue:[], pulls:[], machines:[], jobs:[], hasDelayCols:true, hasMapCols:true, timer:null, edit:null};
 
 /* ---------- dates ---------- */
 const todayISO = () => { const d = new Date(); return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10); };
@@ -149,11 +150,78 @@ function statusTag(v){
 const CLIENT_COLS = "id,client_display_name,source_system,login_reference,client_pos_id,audit_cycle,audit_day_of_week,custom_cycle_days,last_pulled_date,next_due_date,status,notes,last_pull_status,fintech_last_pull_status,fintech_login_reference,fintech_client_pos_id,fintech_retailer_name,deleted_at,updated_at";
 const DELAY_COLS = ",toast_data_delay,toast_data_delay_last_update,toast_data_delay_checked_at,delay_reviewed_at";
 
+const MAP_COLS = ",map_enabled,map_machine,map_machine_picked,pilot_name";
 async function loadClients(){
-  let q = await sb.from("clients").select(CLIENT_COLS + (S.hasDelayCols?DELAY_COLS:"")).is("deleted_at",null).order("client_display_name");
+  let q = await sb.from("clients").select(CLIENT_COLS + (S.hasDelayCols?DELAY_COLS:"") + (S.hasMapCols?MAP_COLS:"")).is("deleted_at",null).order("client_display_name");
+  if (q.error && S.hasMapCols && /map_|pilot_name/i.test(q.error.message)) { S.hasMapCols = false; return loadClients(); }
   if (q.error && S.hasDelayCols && /column/i.test(q.error.message)) { S.hasDelayCols = false; return loadClients(); }
   if (q.error) throw q.error;
   S.clients = q.data;
+  if (S.hasMapCols){
+    const m = await sb.from("machines").select("*").order("name");
+    S.machines = m.error ? [] : m.data;
+    const j = await sb.from("map_jobs").select("*").gte("requested_at", addDays(todayISO(),-10)+"T00:00:00").order("requested_at",{ascending:false}).limit(500);
+    S.jobs = j.error ? [] : j.data;
+  }
+}
+/* ---------- mapping machines ---------- */
+const MACHINE_FRESH = 15*60e3;
+const normName = s => String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+const holdersOf = c => !c.pilot_name ? [] : S.machines.filter(m=>(m.clients_held||[]).some(h=>normName(h.name)===normName(c.pilot_name)));
+const ago = ts => { if (!ts) return "never"; const m = Math.round((Date.now()-new Date(ts))/6e4); return m<1?"just now":m<60?`${m} min ago`:m<1440?`${Math.round(m/60)} h ago`:`${Math.round(m/1440)} days ago`; };
+function mapState(c){
+  if (!S.hasMapCols) return null;
+  if (!c.map_enabled) return {cls:"", txt:"Not set to map"};
+  const hs = holdersOf(c);
+  if (!c.pilot_name) return {cls:"red", txt:"No machine holds this client in Pilot"};
+  if (!c.map_machine) return hs.length>1 ? {cls:"red", txt:`Pick a machine (${hs.length} hold it)`} : {cls:"red", txt:"No audit machine holds it"};
+  const m = S.machines.find(x=>x.name===c.map_machine);
+  if (!m || !hs.some(x=>x.name===c.map_machine)) return {cls:"red", txt:`${c.map_machine} no longer holds it`};
+  if (Date.now()-new Date(m.last_checkin) > MACHINE_FRESH) return {cls:"amber", txt:`${m.name} · offline (seen ${ago(m.last_checkin)})`};
+  return {cls:"green", txt:`Maps on ${m.name}`};
+}
+const PASS = {premap:"3:00 am pre-map", audit:"5:30 am map + import", final:"Final map + import", manual:"Map now"};
+function jobLine(j){
+  const st = {queued:'<span class="tag amber">Waiting</span>', running:'<span class="tag blue">Running</span>', done:'<span class="tag green">Done</span>',
+    failed:'<span class="tag red">Failed</span>', held:'<span class="tag red">Held</span>', cancelled:'<span class="tag">Cancelled</span>'}[j.status]||esc(j.status);
+  const imp = {waiting_click:'<span class="tag amber">Import ready — waiting for a click</span>', released:'<span class="tag blue">Import released</span>',
+    imported:'<span class="tag green">Imported</span>', held:'<span class="tag red">Import held</span>', failed:'<span class="tag red">Import failed</span>'}[j.import_status]||"";
+  return `${esc(PASS[j.pass]||j.pass)} ${st} ${imp}`;
+}
+async function mapNow(c, day, btn){
+  if (!c.map_machine){ toast("Choose a mapping machine for this client first (Clients tab → client → Mapping)."); return; }
+  if (btn) btn.disabled = true;
+  const r = await sb.from("map_jobs").insert({client_id:c.id, machine:c.map_machine, pass:"manual", requested_by:S.user.email, audit_date:day||null}).select("id");
+  if (r.error){ toast("Not queued: "+r.error.message); if (btn) btn.disabled=false; return; }
+  toast(`Queued on ${c.map_machine}. It starts within a few minutes.`); await refresh(true);
+}
+async function releaseImport(j, btn){
+  if (btn) btn.disabled = true;
+  const r = await sb.from("map_jobs").update({import_status:"released", import_released_by:S.user.email, import_released_at:new Date().toISOString()}).eq("id",j.id).eq("import_status","waiting_click").select("id");
+  if (r.error || !r.data?.length){ toast("Not released: "+(r.error?.message||"it was already released")); if (btn) btn.disabled=false; return; }
+  toast("Released — the robot imports as soon as it can."); await refresh(true);
+}
+function openMachines(){
+  const ov = document.createElement("div"); ov.className="overlay";
+  const draw = ()=>{ ov.innerHTML = `<div class="drawer" role="dialog" aria-modal="true">
+    <div class="hd"><h2>Mapping machines</h2><div class="muted small">Every computer running the mapping robot checks in every 5 minutes and reports which clients its Pilot holds.</div></div>
+    <div class="body">${S.machines.length?S.machines.map(m=>{ const fresh = Date.now()-new Date(m.last_checkin) < MACHINE_FRESH;
+      return `<div class="actions" style="margin-bottom:14px"><div class="row" style="flex-direction:column;gap:8px">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;width:100%"><b style="font-size:16px">${esc(m.name)}</b>
+          <span class="tag ${fresh?"green":"red"}">${fresh?"Online":"Offline"} · ${esc(ago(m.last_checkin))}</span>
+          <span class="tag">${m.pilot_running?"Pilot open":"Pilot closed"}</span><span class="grow"></span>
+          <select data-mk="${esc(m.name)}" style="max-width:190px"><option value="audit" ${m.kind==="audit"?"selected":""}>Audit machine</option><option value="desk" ${m.kind==="desk"?"selected":""}>Desk machine (never maps)</option></select></div>
+        <div class="small">${(m.clients_held||[]).map(h=>{ const c = S.clients.find(x=>normName(x.pilot_name)===normName(h.name));
+          return `<div>${esc(h.name)}${c?` → <b>${esc(c.client_display_name)}</b>`:' <span class="tag red">not linked to a client</span>'} <span class="muted">· last sync ${h.last_sync?esc(fmtTime(h.last_sync)):"—"}</span></div>`; }).join("") || '<span class="muted">Holds no clients.</span>'}</div>
+      </div></div>`; }).join("") : `<p class="muted">No machine has checked in yet.</p>`}
+      <p class="hint">A client's Pilot name is linked automatically when it matches the client's name. If one shows "not linked", open that client on the Clients tab → Mapping and type its Pilot name.</p></div>
+    <div class="ft"><span class="grow"></span><button class="b big" id="mc">Close</button></div></div>`;
+    ov.querySelector("#mc").onclick = ()=>ov.remove();
+    ov.querySelectorAll("[data-mk]").forEach(s=>s.onchange=async()=>{ const r = await sb.from("machines").update({kind:s.value}).eq("name",s.dataset.mk).select("name");
+      if (r.error||!r.data?.length){ toast("Not saved: "+(r.error?.message||"no row")); return; } S.machines.find(x=>x.name===s.dataset.mk).kind = s.value; toast("Saved."); });
+  };
+  draw(); document.body.appendChild(ov);
+  ov.addEventListener("mousedown", e=>{ if(e.target===ov) ov.remove(); });
 }
 async function loadQueue(){
   const since = new Date(Date.now()-3*864e5).toISOString();
@@ -304,6 +372,7 @@ function renderMapping(){
       <button class="b" id="wkn" aria-label="Next week">›</button>
       <button class="b" id="wkt">Today</button>
       <span class="grow"></span>
+      ${S.hasMapCols?`<button class="b" id="mmach">Machines${S.machines.length?` · ${S.machines.filter(m=>Date.now()-new Date(m.last_checkin)<MACHINE_FRESH).length} of ${S.machines.length} online`:""}</button>`:""}
       <input id="msearch" placeholder="Search every client: button or product" value="${esc(M.search)}" style="max-width:320px">
     </div>
     <div id="mboard">
@@ -320,22 +389,32 @@ function renderMapping(){
     <div class="ccards">${cards.map(x=>{
       const t = x.t, any = t.open+t.waiting+t.robot+t.done+t.failed;
       const cyc = x.client ? (CYCLES.find(c=>c[0]===x.client.audit_cycle)||[,""])[1] : "";
-      return `<button class="ccard" data-cc="${esc(x.cid||"")}" data-cv="${esc(x.venue)}">
+      const ms = x.client && mapState(x.client);
+      const jobs = x.cid ? S.jobs.filter(j=>j.client_id===x.cid && (j.audit_date===M.day || (!j.audit_date && (j.requested_at||"").slice(0,10)===M.day))) : [];
+      const waitJob = jobs.find(j=>j.import_status==="waiting_click");
+      return `<div class="ccard" role="button" tabindex="0" data-cc="${esc(x.cid||"")}" data-cv="${esc(x.venue)}">
         <b>${esc(x.name)}</b>
         <span class="small muted">${x.client?esc([POS_PREFIX[x.client.source_system]||"", cyc].filter(Boolean).join(" · ")):'<span class="tag red">Not linked to a client</span>'}</span>
+        ${ms?`<span class="small"><span class="tag ${ms.cls}">${esc(ms.txt)}</span></span>`:""}
+        ${jobs.length?`<span class="small" style="display:flex;flex-direction:column;gap:3px">${jobs.slice(0,4).reverse().map(j=>`<span>${jobLine(j)}</span>`).join("")}</span>`:""}
+        ${x.client && (x.client.map_enabled || waitJob)?`<span class="chips">${waitJob?`<button class="b primary" data-imp="${esc(waitJob.id)}">Import now</button>`:""}${x.client.map_machine?`<button class="b" data-mapnow="${esc(x.cid)}">Map now</button>`:""}</span>`:""}
         <span class="chips">
           ${t.open?`<span class="tag amber">${t.open} need a person</span>`:""}
           ${t.failed?`<span class="tag red">${t.failed} failed</span>`:""}
           ${t.waiting?`<span class="tag blue">${t.waiting} waiting for the robot</span>`:""}
           ${t.robot?`<span class="tag green">${t.robot} mapped by the robot</span>`:""}
           ${t.done?`<span class="tag">${t.done} done</span>`:""}
-          ${any?"":`<span class="muted small">${M.day>today?"Audit not done yet":"No mapping run yet"}</span>`}
-        </span></button>`; }).join("") || `<div class="muted">No audits on this day.</div>`}</div>
+          ${any||jobs.length?"":`<span class="muted small">${M.day>today?"Audit not done yet":"No mapping run yet"}</span>`}
+        </span></div>`; }).join("") || `<div class="muted">No audits on this day.</div>`}</div>
     </div><div id="mresults"></div>`;
   $("#wkp").onclick = ()=>moveWeek(-7); $("#wkn").onclick = ()=>moveWeek(7);
   $("#wkt").onclick = ()=>{ M.weekStart = mondayOf(todayISO()); M.day = todayISO(); reloadBoard(); };
   document.querySelectorAll("[data-day]").forEach(b=>b.onclick=()=>{ M.day=b.dataset.day; renderMapping(); });
-  document.querySelectorAll("[data-cc]").forEach(b=>b.onclick=()=>openClient(b.dataset.cc||null, b.dataset.cv, M.day));
+  document.querySelectorAll("[data-cc]").forEach(b=>{ const go = ()=>openClient(b.dataset.cc||null, b.dataset.cv, M.day);
+    b.onclick = go; b.onkeydown = e=>{ if (e.target===b && (e.key==="Enter"||e.key===" ")){ e.preventDefault(); go(); } }; });
+  document.querySelectorAll("[data-mapnow]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); mapNow(clientOf(b.dataset.mapnow), M.day, b); });
+  document.querySelectorAll("[data-imp]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); releaseImport(S.jobs.find(j=>j.id===b.dataset.imp), b); });
+  $("#mmach")?.addEventListener("click", openMachines);
   document.querySelectorAll("[data-ec]").forEach(b=>b.onclick=()=>openClient(b.dataset.ec||null, b.dataset.ev, b.dataset.ea||null));
   let tm; $("#msearch").oninput = e=>{ M.search=e.target.value; clearTimeout(tm); tm=setTimeout(searchAll,350); };
   if (M.search) searchAll();
@@ -571,6 +650,7 @@ function blankClient(){ return {client_display_name:"",source_system:"toast",log
 
 function openEditor(c){
   S.edit = {orig:c, draft:Object.assign(blankClient(), c ? JSON.parse(JSON.stringify(c)) : {}), tab:"schedule", msg:null, review:null};
+  S.edit.draft.map_choice = S.edit.draft.map_machine_picked && S.edit.draft.map_machine ? S.edit.draft.map_machine : "auto";
   if (S.edit.draft.fintech_login_reference && FINTECH_NONE.has(String(S.edit.draft.fintech_login_reference).toLowerCase())) S.edit.draft.fintech_login_reference = "";
   drawEditor();
 }
@@ -583,11 +663,29 @@ function field(k, type="text", opts){
   return `<input data-k="${k}" type="${type}" value="${esc(v??"")}">`;
 }
 
+function mappingTabHTML(d, c){
+  const hs = holdersOf(d).filter(m=>m.kind==="audit"), all = S.machines.filter(m=>m.kind==="audit");
+  const auto = c && !c.map_machine_picked && c.map_machine ? `Automatic (now: ${c.map_machine})` : "Automatic";
+  const st = c ? mapState(Object.assign({}, c, {map_enabled:true})) : null;
+  const jobs = c ? S.jobs.filter(j=>j.client_id===c.id).slice(0,8) : [];
+  return `<div class="grid">
+    <div><label>${LABEL.map_enabled}</label>${field("map_enabled","select",[["false","No"],["true","Yes — map it every audit"]])}
+      <div class="hint">Yes: the robot maps this client at 3:00 am and again after the 5:30 am pull on its audit day, then imports the sales file into Pilot.</div></div>
+    <div><label>${LABEL.map_machine}</label>${field("map_choice","select",[["auto",auto], ...all.map(m=>[m.name, m.name+(hs.some(h=>h.name===m.name)?" (holds it)":" (does NOT hold it)")])])}
+      <div class="hint">Automatic picks the one audit machine whose Pilot holds this client. Choose a machine when more than one holds it; your choice then never changes on its own.</div></div>
+    <div class="full"><label>${LABEL.pilot_name}</label>${field("pilot_name")}
+      <div class="hint">The client's name exactly as Pilot shows it, e.g. "100 Montaditos Calle Ocho". Filled in automatically when the names match.</div></div>
+    ${c?`<div class="full"><label>Right now</label><div>${st?`<span class="tag ${st.cls}">${esc(st.txt)}</span>`:""}
+      <span class="muted small">Held by: ${holdersOf(c).map(m=>esc(m.name)+(m.kind==="desk"?" (desk)":"")).join(", ")||"no machine"}</span></div></div>
+    <div class="full"><label>Recent mapping runs</label>${jobs.length?jobs.map(j=>`<div class="small">${fmtTime(j.requested_at)} · ${jobLine(j)}${j.summary?` <span class="muted">— ${esc(j.summary)}</span>`:""}</div>`).join(""):'<span class="muted small">None yet.</span>'}</div>`:""}
+  </div>`;
+}
+
 function drawEditor(){
   const E = S.edit, d = E.draft, c = E.orig;
   document.querySelector(".overlay")?.remove();
   const ov = document.createElement("div"); ov.className="overlay";
-  const tabs = c ? [["schedule","Schedule"],["pos","POS"],["fintech","Fintech"],["notes","Notes"],["actions","Actions"],["log","Recent pulls"]] : [["schedule","Schedule"],["pos","POS"],["fintech","Fintech"],["notes","Notes"]];
+  const tabs = c ? [["schedule","Schedule"],["pos","POS"],["fintech","Fintech"],...(S.hasMapCols?[["mapping","Mapping"]]:[]),["notes","Notes"],["actions","Actions"],["log","Recent pulls"]] : [["schedule","Schedule"],["pos","POS"],["fintech","Fintech"],["notes","Notes"]];
   let body = "";
   if (E.review) body = reviewHTML();
   else if (E.tab==="schedule") body = `<div class="grid">
@@ -610,6 +708,7 @@ function drawEditor(){
       <div class="full"><label>${LABEL.fintech_client_pos_id}</label>${field("fintech_client_pos_id")}<div class="hint">The company name Fintech shows when choosing a venue (new portal).</div></div>
       <div class="full"><label>${LABEL.fintech_retailer_name}</label>${field("fintech_retailer_name")}<div class="hint">Only for a login that covers several venues on the old portal: the retailer name in column B.</div></div>
     </div>`;
+  else if (E.tab==="mapping") body = mappingTabHTML(d, c);
   else if (E.tab==="notes") body = `<label>${LABEL.notes}</label>${field("notes","textarea")}`;
   else if (E.tab==="actions") body = actionsHTML();
   else if (E.tab==="log") body = `<div id="clog" class="muted">Loading…</div>`;
@@ -636,7 +735,7 @@ function drawEditor(){
 /* field checks: hard errors block the save; warnings are shown in the review */
 function normalize(d){
   const o = {};
-  for (const k of EDIT_FIELDS){
+  for (const k of editFields()){
     let v = d[k];
     if (typeof v==="string") v = v.trim().replace(/^"+|"+$/g,"").trim();
     if (v==="" ) v = null;
@@ -647,6 +746,7 @@ function normalize(d){
   o.status = (o.status||"active").toLowerCase();
   o.source_system = (o.source_system||"").toLowerCase();
   o.notes = o.notes || "";
+  if (S.hasMapCols){ o.map_enabled = String(d.map_enabled)==="true"; const ch = d.map_choice||"auto"; if (ch==="auto"){ o.map_machine_picked = false; o.map_machine = S.edit.orig?.map_machine_picked ? null : (S.edit.orig?.map_machine ?? null); } else { o.map_machine_picked = true; o.map_machine = ch; } }
   if (o.audit_cycle!=="custom") o.custom_cycle_days = null;
   return o;
 }
@@ -676,12 +776,13 @@ function check(o){
   if (o.last_pulled_date && o.last_pulled_date > todayISO()) errs.push("Last audit date can't be in the future.");
   const cd = cycleDays(o.audit_cycle,o.custom_cycle_days);
   if (cd && o.last_pulled_date && o.next_due_date){ const gap = (new Date(o.next_due_date)-new Date(o.last_pulled_date))/864e5; if (gap!==cd) warns.push(`The gap between the two dates is ${gap} days; the cycle is ${cd}. Fine for a one-off, just confirming.`); }
+  if (S.hasMapCols && o.map_enabled && !o.map_machine) warns.push("This client is set to map, but no machine is chosen yet. It maps once one audit machine holds it in Pilot, or once you pick one.");
   if (o.next_due_date && o.next_due_date < todayISO() && o.status==="active") warns.push("Next audit date is in the past — the 5am run will not pick it up. Use Run Now after saving.");
   return {errs,warns};
 }
 function changes(o){
   const orig = S.edit.orig; const out=[];
-  for (const k of EDIT_FIELDS){
+  for (const k of editFields()){
     const a = orig ? (orig[k]??null) : null, b = o[k]??null;
     const na = (a===""?null:a), nb=(b===""?null:b);
     if (String(na??"")!==String(nb??"")) out.push([k,na,nb]);
@@ -690,7 +791,7 @@ function changes(o){
 }
 const pick = (list,v) => (list.find(x=>x[0]===v)||[0,v])[1];
 const showVal = (k,v) => v===null||v===undefined||v==="" ? "(empty)" : /date/.test(k)?fmtLong(v):k==="audit_day_of_week"?DAYS[v]||v
-  : k==="source_system"?pick(SOURCES,v):k==="audit_cycle"?pick(CYCLES,v):k==="status"?pick(STATUSES,v):String(v);
+  : k==="map_enabled"||k==="map_machine_picked"?(v===true||v==="true"?"Yes":"No") : k==="source_system"?pick(SOURCES,v):k==="audit_cycle"?pick(CYCLES,v):k==="status"?pick(STATUSES,v):String(v);
 
 function startSave(andRun){
   const o = normalize(S.edit.draft); const {errs,warns} = check(o);
