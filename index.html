@@ -117,7 +117,7 @@ const EDIT_FIELDS = ["client_display_name","source_system","login_reference","cl
 const editFields = () => S.hasMapCols ? EDIT_FIELDS.concat(["map_enabled","map_machine","map_machine_picked","pilot_name"]) : EDIT_FIELDS;
 const LABEL = {map_enabled:"Map this client",map_machine:"Mapping machine",map_machine_picked:"Machine chosen by a person",pilot_name:"Name in Pilot",client_display_name:"Client name",source_system:"POS",login_reference:"POS login (1Password item)",client_pos_id:"POS venue name / ID",audit_cycle:"Audit cycle",audit_day_of_week:"Audit day",custom_cycle_days:"Custom cycle days",last_pulled_date:"Last audit date",next_due_date:"Next audit date",status:"Client status",notes:"Notes",fintech_login_reference:"Fintech login (1Password item)",fintech_client_pos_id:"Fintech venue name",fintech_retailer_name:"Fintech retailer name"};
 
-let S = {user:null, view:"clients", clients:[], queue:[], pulls:[], machines:[], jobs:[], hasDelayCols:true, hasMapCols:true, timer:null, edit:null};
+let S = {user:null, view:"clients", clients:[], queue:[], pulls:[], machines:[], jobs:[], hasDelayCols:true, hasMapCols:true, hasWinCol:true, timer:null, edit:null};
 
 /* ---------- dates ---------- */
 const todayISO = () => { const d = new Date(); return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10); };
@@ -152,7 +152,8 @@ const DELAY_COLS = ",toast_data_delay,toast_data_delay_last_update,toast_data_de
 
 const MAP_COLS = ",map_enabled,map_machine,map_machine_picked,pilot_name";
 async function loadClients(){
-  let q = await sb.from("clients").select(CLIENT_COLS + (S.hasDelayCols?DELAY_COLS:"") + (S.hasMapCols?MAP_COLS:"")).is("deleted_at",null).order("client_display_name");
+  let q = await sb.from("clients").select(CLIENT_COLS + (S.hasDelayCols?DELAY_COLS:"") + (S.hasMapCols?MAP_COLS:"") + (S.hasWinCol?",recipe_delete_after_months":"")).is("deleted_at",null).order("client_display_name");
+  if (q.error && S.hasWinCol && /recipe_delete/i.test(q.error.message)) { S.hasWinCol = false; return loadClients(); }
   if (q.error && S.hasMapCols && /map_|pilot_name/i.test(q.error.message)) { S.hasMapCols = false; return loadClients(); }
   if (q.error && S.hasDelayCols && /column/i.test(q.error.message)) { S.hasDelayCols = false; return loadClients(); }
   if (q.error) throw q.error;
@@ -166,7 +167,7 @@ async function loadClients(){
 }
 /* ---------- mapping machines ---------- */
 const MACHINE_FRESH = 15*60e3;
-const normName = s => String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+const normName = s => String(s||"").toLowerCase().replace(/&/g,"and").replace(/[^a-z0-9]/g,"");
 const holdersOf = c => !c.pilot_name ? [] : S.machines.filter(m=>(m.clients_held||[]).some(h=>normName(h.name)===normName(c.pilot_name)));
 const ago = ts => { if (!ts) return "never"; const m = Math.round((Date.now()-new Date(ts))/6e4); return m<1?"just now":m<60?`${m} min ago`:m<1440?`${Math.round(m/60)} h ago`:`${Math.round(m/1440)} days ago`; };
 function mapState(c){
@@ -180,7 +181,7 @@ function mapState(c){
   if (Date.now()-new Date(m.last_checkin) > MACHINE_FRESH) return {cls:"amber", txt:`${m.name} · offline (seen ${ago(m.last_checkin)})`};
   return {cls:"green", txt:`Maps on ${m.name}`};
 }
-const PASS = {premap:"3:00 am pre-map", audit:"5:30 am map + import", final:"Final map + import", manual:"Map now"};
+const PASS = {premap:"3:00 am pre-map", audit:"5:00 am map + import", final:"Final map + import", manual:"Map now"};
 function jobLine(j){
   const st = {queued:'<span class="tag amber">Waiting</span>', running:'<span class="tag blue">Running</span>', done:'<span class="tag green">Done</span>',
     failed:'<span class="tag red">Failed</span>', held:'<span class="tag red">Held</span>', cancelled:'<span class="tag">Cancelled</span>'}[j.status]||esc(j.status);
@@ -236,10 +237,10 @@ async function loadPulls(){
   S.pulls = q.data;
 }
 async function refresh(quiet){
-  try { await Promise.all([loadClients(), loadQueue(), loadMapping().catch(()=>{})]); if (S.view==="history") await loadPulls(); render(); }
+  try { await Promise.all([loadClients(), loadQueue(), loadMapping().catch(()=>{}), loadDb().catch(()=>{})]); if (S.view==="history") await loadPulls(); render(); }
   catch(e){ if(!quiet) toast("Could not load: "+(e.message||e)); }
 }
-function startTimer(){ clearInterval(S.timer); S.timer = setInterval(()=>{ if(!S.edit && !M.other && !M.flag && !(S.view==="mapping" && M.search) && document.visibilityState==="visible") refresh(true); }, 60000); }
+function startTimer(){ clearInterval(S.timer); S.timer = setInterval(()=>{ if(!S.edit && !M.other && !M.flag && !(S.view==="mapping" && M.search) && !(S.view==="dbreview" && D.client) && document.visibilityState==="visible") refresh(true); }, 60000); }
 
 /* ---------- auth ---------- */
 async function boot(){
@@ -267,12 +268,167 @@ function render(){
   if (!S.user) return;
   const v = S.view;
   $("#app").innerHTML = `<header><h1>Barmetrix File Pulls</h1>
-    <nav>${[["clients","Clients"],["mapping",`Mapping${openTotal()?` <span class="tag amber">${openTotal()}</span>`:""}`],["queue","Run queue"],["history","Pull history"]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
+    <nav>${[["clients","Clients"],["mapping",`Mapping${openTotal()?` <span class="tag amber">${openTotal()}</span>`:""}`],["dbreview",`Database review${dbOpenTotal()?` <span class="tag amber">${dbOpenTotal()}</span>`:""}`],["queue","Run queue"],["history","Pull history"]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
     <div class="who"><span>${esc(S.user.email)}</span><button class="b" id="out">Sign out</button></div></header>
     <main id="main"></main>`;
-  document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); if(S.view==="mapping") await loadMapping().catch(e=>toast(e.message)); render(); });
+  document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); if(S.view==="mapping") await loadMapping().catch(e=>toast(e.message)); if(S.view==="dbreview") await loadDb().catch(e=>toast(e.message)); render(); });
   $("#out").onclick = ()=>sb.auth.signOut();
-  if (v==="clients") renderClients(); else if (v==="mapping") renderMapping(); else if (v==="queue") renderQueue(); else renderHistory();
+  if (v==="clients") renderClients(); else if (v==="mapping") renderMapping(); else if (v==="dbreview") renderDb(); else if (v==="queue") renderQueue(); else renderHistory();
+}
+
+/* ---------- database review: dead recipes first (more checks join later) ----------
+   Pilot rebuilds every report from TODAY's recipes, so deleting a recipe changes any old audit
+   that is run again. A recipe is only offered here once its last sale is older than the client's
+   "safe to delete after" window (clients.recipe_delete_after_months). */
+const D = {ready:true, sum:[], client:null, items:[], tab:"open", sel:new Set(), q:""};
+const DB_WINDOWS = [3,6,9,12,18,24];
+const DB_KEEP_MONTHS = 3;   // "Keep" is a snooze, not forever (Dave 11/11/2026); tools/db_review.py KEEP_MONTHS
+const keepUntil = ts => { const d = new Date(ts); d.setMonth(d.getMonth()+DB_KEEP_MONTHS); return d.toISOString().slice(0,10); };
+const DB_COLS = "id,client_id,venue,kind,recipe,last_sold,units_ever,buttons_mapped,last_counted,suggestion,reason,status,choice,decided_by,decided_at,applied_at,applied_detail,found_at";
+const DB_TABS = [["open","Waiting for a decision"],["decided","Approved — the robot deletes next"],["applied","Deleted"],["kept","Kept"]];
+const dbOpenTotal = () => D.sum.filter(r=>r.status==="open").reduce((a,r)=>a+r.n,0);
+const dbTabOf = r => r.status==="open" ? "open" : r.status==="applied" ? "applied" : (r.choice==="keep"||r.choice==="reject") ? "kept" : r.status==="decided" ? "decided" : r.status==="failed" ? "decided" : null;
+
+async function loadDb(){
+  const q = await sb.from("db_review_summary").select("*");
+  if (q.error){ D.ready = !/relation|does not exist|schema cache|column/i.test(q.error.message); if (!D.ready) return; throw q.error; }
+  D.ready = true; D.sum = q.data;
+  const r = await sb.from("db_review_runs").select("*").order("requested_at",{ascending:false}).limit(1);
+  D.run = r.error ? null : (r.data[0] || null);
+  if (D.client) await loadDbItems();
+}
+function runLine(){
+  const r = D.run;
+  if (!r) return `<span class="muted small">Not run from here yet.</span>`;
+  const who = esc((r.requested_by||"").split("@")[0]);
+  if (r.status==="queued") return `<span class="tag amber">Waiting for the robot's computer</span> <span class="muted small">asked by ${who} ${esc(ago(r.requested_at))}. It starts within a minute when that computer is on.</span>`;
+  if (r.status==="running") return `<span class="tag blue">Running on ${esc(r.machine||"")}</span> <span class="muted small">started ${esc(ago(r.started_at))}</span>`;
+  if (r.status==="failed") return `<span class="tag red">Last run failed</span> <span class="muted small">${esc(fmtTime(r.finished_at))} · ${esc(r.summary||"")}</span>`;
+  return `<span class="tag green">Last run ${esc(fmtTime(r.finished_at))}</span> <span class="muted small">${esc(r.summary||"")}</span>`;
+}
+async function runDbReview(btn){
+  btn.disabled = true;
+  const r = await sb.from("db_review_runs").insert({requested_by:S.user.email}).select("id");
+  if (r.error){ toast("Not started: "+r.error.message); btn.disabled = false; return; }
+  toast("Asked the robot to run the database review. The list refreshes when it finishes.");
+  await loadDb().catch(()=>{}); renderDb();
+  const t0 = Date.now();
+  const tick = setInterval(async()=>{                     // follow it until it finishes (max 15 min)
+    await loadDb().catch(()=>{});
+    if (S.view==="dbreview" && !D.client) renderDb();
+    if (!D.run || ["done","failed"].includes(D.run.status) || Date.now()-t0 > 15*60e3) clearInterval(tick);
+  }, 15000);
+}
+async function loadDbItems(){
+  const c = D.client, out = [];
+  for (let from=0; ; from+=1000){
+    let q = sb.from("db_review_items").select(DB_COLS).eq("kind","dead");
+    q = c.cid ? q.eq("client_id",c.cid) : q.eq("venue",c.venue).is("client_id",null);
+    const r = await q.order("last_sold",{ascending:true,nullsFirst:true}).order("recipe").range(from, from+999);
+    if (r.error) throw r.error;
+    out.push(...r.data);
+    if (r.data.length < 1000) break;
+  }
+  D.items = out.filter(r=>r.status!=="gone");
+  const live = new Set(D.items.map(r=>r.id));
+  [...D.sel].forEach(id=>{ if (!live.has(id)) D.sel.delete(id); });
+}
+function dbCards(){
+  const cards = new Map();
+  D.sum.filter(r=>r.kind==="dead" && r.status!=="gone").forEach(r=>{
+    const k = ckey(r.client_id, r.venue);
+    if (!cards.has(k)) cards.set(k, {cid:r.client_id, venue:r.venue, open:0, decided:0, applied:0, last:r.last_found});
+    const x = cards.get(k);
+    if (r.status==="open") x.open+=r.n; else if (r.status==="applied") x.applied+=r.n; else if (r.status==="decided") x.decided+=r.n;
+    if (r.last_found > x.last) x.last = r.last_found;
+  });
+  return [...cards.values()].map(x=>{ const c = x.cid && clientOf(x.cid); return Object.assign(x, {client:c, name: c ? c.client_display_name : x.venue}); })
+    .sort((a,b)=> b.open-a.open || a.name.localeCompare(b.name));
+}
+const windowOf = c => (c && c.recipe_delete_after_months) || 12;
+function windowSelect(c){
+  if (!c) return `<span class="muted small">12 months (link this Pilot name to a client to change it)</span>`;
+  return `<select data-win="${esc(c.id)}" style="max-width:150px">${DB_WINDOWS.map(m=>`<option value="${m}" ${windowOf(c)===m?"selected":""}>${m} months</option>`).join("")}</select>`;
+}
+async function saveWindow(sel){
+  const m = parseInt(sel.value), c = S.clients.find(x=>x.id===sel.dataset.win);
+  const r = await sb.from("clients").update({recipe_delete_after_months:m}).eq("id",c.id).select("id");
+  if (r.error||!r.data?.length){ toast("Not saved: "+(r.error?.message||"no row")); sel.value = windowOf(c); return; }
+  c.recipe_delete_after_months = m;
+  toast(`Saved: ${c.client_display_name} — ${m} months. The list updates on the robot's next scan.`);
+}
+
+function renderDb(){
+  if (!D.ready){ $("#main").innerHTML = `<div class="msg info"><b>The Database Review isn't switched on in the database yet.</b> Run "STEP 7 - SUPABASE - database review" (Google Drive → My Drive → Barmetrix Automation) in the Supabase SQL Editor, then reload this page.</div>`; return; }
+  if (D.client) return renderDbClient();
+  const cards = dbCards();
+  const busy = D.run && ["queued","running"].includes(D.run.status);
+  $("#main").innerHTML = `
+    <div class="bar"><button class="b primary" id="drun" ${busy?"disabled":""}>Run the database review now</button><div>${runLine()}</div></div>
+    <div class="banner blue"><b>Dead recipes</b>Recipes that haven't sold, or been counted on the shelf, for longer than the client's "safe to delete after" window.
+      Pilot rebuilds every report from today's recipes, so a deleted recipe disappears from any old audit that is run again. The window keeps every audit the client still looks back at untouched.</div>
+    ${cards.length ? `<div class="ccards">${cards.map((x,i)=>`<div class="ccard" data-dc="${i}">
+        <b>${esc(x.name)}</b>
+        <div class="chips">${x.open?`<span class="tag amber">${x.open} waiting</span>`:""}${x.decided?`<span class="tag blue">${x.decided} approved</span>`:""}${x.applied?`<span class="tag green">${x.applied} deleted</span>`:""}${!x.open&&!x.decided&&!x.applied?'<span class="tag">Nothing waiting</span>':""}</div>
+        <div class="small muted">Safe to delete after</div>
+        <div onclick="event.stopPropagation()">${windowSelect(x.client)}</div>
+        <div class="small muted">Last scan ${esc(fmtTime(x.last))}</div></div>`).join("")}</div>`
+      : `<p class="muted">Nothing found yet. Press "Run the database review now".</p>`}`;
+  $("#drun").onclick = e=>runDbReview(e.currentTarget);
+  document.querySelectorAll("[data-win]").forEach(s=>s.onchange=()=>saveWindow(s));
+  document.querySelectorAll("[data-dc]").forEach(el=>el.onclick=async()=>{ const x = cards[+el.dataset.dc];
+    D.client = {cid:x.cid, venue:x.venue, name:x.name}; D.tab="open"; D.sel = new Set(); D.q="";
+    try { await loadDbItems(); } catch(e){ toast("Could not load: "+(e.message||e)); } renderDb(); });
+}
+function renderDbClient(){
+  const c = D.client, cl = c.cid && clientOf(c.cid);
+  const inTab = D.items.filter(r=>dbTabOf(r)===D.tab);
+  const q = D.q.trim().toLowerCase();
+  const rows = q ? inTab.filter(r=>r.recipe.toLowerCase().includes(q)) : inTab;
+  const counts = Object.fromEntries(DB_TABS.map(([k])=>[k, D.items.filter(r=>dbTabOf(r)===k).length]));
+  const open = D.tab==="open";
+  const ticked = rows.filter(r=>D.sel.has(r.id)).length;
+  $("#main").innerHTML = `
+    <div class="bar"><button class="b" id="dback">← All clients</button><h2 style="margin:0 8px;font-size:18px">${esc(c.name)} — dead recipes</h2>
+      <span class="grow"></span><span class="small muted">Safe to delete after</span>${windowSelect(cl)}</div>
+    <div class="tabs" style="padding:0;margin:0 0 12px">${DB_TABS.map(([k,l])=>`<button data-dt="${k}" class="${D.tab===k?"on":""}">${l} (${counts[k]})</button>`).join("")}</div>
+    <div class="bar"><input id="dq" placeholder="Search recipes" value="${esc(D.q)}" style="max-width:280px">
+      ${open?`<button class="b" id="dall">Tick all ${rows.length}</button><button class="b" id="dnone">Untick all</button><span class="grow"></span>
+      <button class="b" id="dkeep" ${ticked?"":"disabled"}>Keep the ${ticked} ticked for ${DB_KEEP_MONTHS} months</button>
+      <button class="b danger" id="dok" ${ticked?"":"disabled"}>Approve deleting the ${ticked} ticked</button>`:""}</div>
+    ${open?`<p class="small muted" style="margin:0 0 10px">Approving deletes the recipe in Pilot. Any POS button still mapped to it is unmapped at the same time, so if that button ever rings again it shows up as unmapped instead of depleting nothing. Pilot's delete also removes the recipe's past sales from every audit; every one listed here last sold before the client's window, so no audit the client still looks back at changes. "Keep" puts it away for ${DB_KEEP_MONTHS} months; if it still hasn't sold by then, it comes back here.</p>`:""}
+    ${rows.length ? `<div class="tablewrap"><table style="min-width:760px"><thead><tr>${open?"<th></th>":""}<th>Recipe</th><th>Last sold</th><th>Units sold (all time)</th><th>Buttons mapped</th><th>Last counted</th><th>${open?"Why":"Decided"}</th></tr></thead><tbody>
+      ${rows.map(r=>`<tr data-dr="${esc(r.id)}">${open?`<td><input type="checkbox" ${D.sel.has(r.id)?"checked":""} style="width:auto"></td>`:""}
+        <td>${esc(r.recipe)}</td><td>${r.last_sold?esc(fmtDate(r.last_sold)):'<span class="muted">No sale on record</span>'}</td>
+        <td class="mono">${Number(r.units_ever||0).toLocaleString()}</td><td class="mono">${r.buttons_mapped||0}</td>
+        <td>${r.last_counted?esc(fmtDate(r.last_counted)):'<span class="muted">—</span>'}</td>
+        <td class="small" style="white-space:normal;min-width:260px">${open?esc(r.reason||""):`${esc(r.decided_by||"")}${r.decided_at?" · "+esc(fmtTime(r.decided_at)):""}${D.tab==="kept"&&r.decided_at?`<div class="muted">Comes back ${esc(fmtDate(keepUntil(r.decided_at)))} if it still hasn't sold</div>`:""}${r.applied_detail?`<div class="muted">${esc(r.applied_detail)}</div>`:""}`}</td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="muted">${q?"No recipe matches that search.":"Nothing here."}</p>`}`;
+  $("#dback").onclick = async()=>{ D.client=null; await loadDb().catch(()=>{}); renderDb(); };
+  document.querySelectorAll("[data-win]").forEach(s=>s.onchange=()=>saveWindow(s));
+  document.querySelectorAll("[data-dt]").forEach(b=>b.onclick=()=>{ D.tab=b.dataset.dt; renderDbClient(); });
+  const dq = $("#dq"); dq.oninput = ()=>{ D.q = dq.value; const p = dq.selectionStart; renderDbClient(); const n=$("#dq"); n.focus(); n.setSelectionRange(p,p); };
+  if (open){
+    document.querySelectorAll("[data-dr]").forEach(tr=>tr.onclick=e=>{ const id = tr.dataset.dr; D.sel.has(id)?D.sel.delete(id):D.sel.add(id); renderDbClient(); });
+    $("#dall").onclick = ()=>{ rows.forEach(r=>D.sel.add(r.id)); renderDbClient(); };
+    $("#dnone").onclick = ()=>{ rows.forEach(r=>D.sel.delete(r.id)); renderDbClient(); };
+    $("#dok").onclick = ()=>decideDb(rows.filter(r=>D.sel.has(r.id)), "approve");
+    $("#dkeep").onclick = ()=>decideDb(rows.filter(r=>D.sel.has(r.id)), "keep");
+  }
+}
+async function decideDb(list, choice){
+  if (!list.length) return;
+  const now = new Date().toISOString(), ids = list.map(r=>r.id);
+  let done = 0;
+  for (let i=0; i<ids.length; i+=100){
+    const r = await sb.from("db_review_items").update({status:"decided", choice, decided_by:S.user.email, decided_at:now, updated_at:now})
+      .in("id", ids.slice(i,i+100)).eq("status","open").select("id");
+    if (r.error){ toast("Stopped: "+r.error.message); break; }
+    done += r.data.length;
+  }
+  ids.forEach(id=>D.sel.delete(id));
+  toast(choice==="approve" ? `${done} approved — the robot deletes them on its next run.` : `${done} kept for ${DB_KEEP_MONTHS} months — they come back if they still haven't sold.`);
+  await loadDbItems().catch(()=>{}); await loadDb().catch(()=>{}); render();
 }
 
 /* ---------- mapping review: organised by AUDIT DAY, then CLIENT ---------- */
@@ -670,7 +826,7 @@ function mappingTabHTML(d, c){
   const jobs = c ? S.jobs.filter(j=>j.client_id===c.id).slice(0,8) : [];
   return `<div class="grid">
     <div><label>${LABEL.map_enabled}</label>${field("map_enabled","select",[["false","No"],["true","Yes — map it every audit"]])}
-      <div class="hint">Yes: the robot maps this client at 3:00 am and again after the 5:30 am pull on its audit day, then imports the sales file into Pilot.</div></div>
+      <div class="hint">Yes: the robot maps this client at 3:00 am and again after the 5:00 am pull on its audit day, then imports the sales file into Pilot.</div></div>
     <div><label>${LABEL.map_machine}</label>${field("map_choice","select",[["auto",auto], ...all.map(m=>[m.name, m.name+(hs.some(h=>h.name===m.name)?" (holds it)":" (does NOT hold it)")])])}
       <div class="hint">Automatic picks the one audit machine whose Pilot holds this client. Choose a machine when more than one holds it; your choice then never changes on its own.</div></div>
     <div class="full"><label>${LABEL.pilot_name}</label>${field("pilot_name")}
