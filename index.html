@@ -435,7 +435,7 @@ async function decideDb(list, choice){
 const mondayOf = iso => { const d = new Date(iso+"T12:00:00"); return addDays(iso, -((d.getDay()+6)%7)); };
 const daysBetween = (a,b) => Math.round((new Date(a+"T12:00:00")-new Date(b+"T12:00:00"))/864e5);
 const fmtDay = iso => new Date(iso+"T12:00:00").toLocaleDateString("en-US",{weekday:"short",month:"numeric",day:"numeric"});
-const M = {ready:true, sum:[], weekStart:mondayOf(todayISO()), day:todayISO(), client:null, items:[], audits:[], tab:"open", q:"", search:"", other:null, flag:null};
+const M = {ready:true, hasOpts:true, sum:[], weekStart:mondayOf(todayISO()), day:todayISO(), client:null, items:[], audits:[], tab:"open", q:"", search:"", other:null, flag:null};
 const KIND = {mapped:"Mapped", trashed:"Trashed", decide:"Mapping to check", stuck:"No suggestion yet", trash:"Trash suggestion",
   fix:"Recipe / size fix", invoice:"Invoice line", unmapped:"Waiting for the count"};
 const KIND_ORDER = ["stuck","decide","trash","fix","invoice","unmapped"];
@@ -466,10 +466,12 @@ async function loadMapping(){
 async function loadClientItems(){
   const c = M.client, out = [];
   for (let from=0; ; from+=1000){
-    let q = sb.from("mapping_items").select(ITEM_COLS);
+    // options/chosen arrive with STEP 9; until then the tab works without the choice buttons
+    let q = sb.from("mapping_items").select(ITEM_COLS + (M.hasOpts ? ",options,chosen" : ""));
     q = c.cid ? q.eq("client_id",c.cid) : q.eq("venue",c.venue).is("client_id",null);
     if (c.audit!=="all") q = c.audit ? q.eq("audit_date",c.audit) : q.is("audit_date",null);
     const r = await q.order("kind").order("title").range(from, from+999);
+    if (r.error && M.hasOpts && /options|chosen/i.test(r.error.message)){ M.hasOpts = false; return loadClientItems(); }
     if (r.error) throw r.error;
     out.push(...r.data);
     if (r.data.length < 1000) break;
@@ -626,9 +628,13 @@ function renderClientAudit(){
         ${c.audit===null?'<option value="" selected>No audit date</option>':""}<option value="all" ${c.audit==="all"?"selected":""}>All audits</option></select>
     </div>
     ${cl?"":`<div class="msg info">These items came from a Pilot venue name that doesn't match a client in the Clients tab. They still work; Claude links them on the next run.</div>`}
+    ${writeNowBar(cl, c, it)}
     <div class="tabs" style="padding:0;margin:0 0 14px">${tabs.map(([k,l,n])=>`<button data-mt="${k}" class="${M.tab===k?"on":""}">${l} (${n})</button>`).join("")}</div>
     <div id="mbody"></div>`;
   $("#mback").onclick = ()=>{ M.client=null; M.items=[]; render(); };
+  $("#mwrite")?.addEventListener("click", ()=>{ M.confirmWrite=true; renderClientAudit(); });
+  $("#mwrite-no")?.addEventListener("click", ()=>{ M.confirmWrite=false; renderClientAudit(); });
+  $("#mwrite-yes")?.addEventListener("click", e=>writeNow(cl, c, e.currentTarget));
   $("#maudit").onchange = async e=>{ M.client.audit = e.target.value===""?null:e.target.value; try{ await loadClientItems(); }catch(er){ toast(er.message); } renderClientAudit(); };
   document.querySelectorAll("[data-mt]").forEach(b=>b.onclick=()=>{ M.tab=b.dataset.mt; M.other=null; renderClientAudit(); });
   if (M.tab==="open") mapOpen(open);
@@ -637,10 +643,44 @@ function renderClientAudit(){
   else mapTable(done, "Nothing finished yet for this audit.");
 }
 
+/* "Write to Pilot now": approved items are written into Pilot by the client's mapping computer
+   within a minute, instead of waiting for a run (Dave 11/12: waiting "leaves the audit incomplete"). */
+function writeJob(cl, audit){
+  return S.jobs.find(j=>cl && j.client_id===cl.id && j.pass==="manual" && (j.detail||{}).kind==="apply"
+    && j.audit_date===audit && ["queued","running"].includes(j.status));
+}
+function writeNowBar(cl, c, it){
+  if (!cl || !c.audit || c.audit==="all") return "";
+  const n = it.filter(i=>i.status==="decided" && i.choice!=="reject").length;
+  const job = writeJob(cl, c.audit);
+  const last = S.jobs.filter(j=>j.client_id===cl.id && (j.detail||{}).kind==="apply" && j.audit_date===c.audit && ["done","failed"].includes(j.status))
+    .sort((a,b)=>String(b.finished_at).localeCompare(String(a.finished_at)))[0];
+  if (job) return `<div class="banner blue"><b>Writing to Pilot on ${esc(job.machine||"")}…</b>${job.status==="queued"?"Waiting for that computer to pick it up (under a minute when it's on).":"Running now. Pilot on that computer is in use until it finishes."}</div>`;
+  const lastLine = last ? `<span class="muted small">Last write: ${esc(fmtTime(last.finished_at))} — ${esc(last.summary||last.status)}</span>` : "";
+  if (!n) return lastLine ? `<div class="bar">${lastLine}</div>` : "";
+  if (M.confirmWrite) return `<div class="banner amber"><b>Write ${n} approved item${n>1?"s":""} into Pilot now?</b>
+      Pilot on ${esc(cl.map_machine||"the mapping computer")} will close and reopen while it works (about a minute, plus 15 seconds per item). Make sure nobody is in the middle of something in Pilot on that computer.
+      <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" id="mwrite-yes">Yes, write them now</button><button class="b" id="mwrite-no">Not now</button></div></div>`;
+  return `<div class="bar"><button class="b primary" id="mwrite">Write ${n} approved item${n>1?"s":""} to Pilot now</button>${lastLine}</div>`;
+}
+async function writeNow(cl, c, btn){
+  if (!cl.map_machine){ toast("This client has no mapping computer yet (Clients tab → client → Mapping)."); return; }
+  btn.disabled = true;
+  const r = await sb.from("map_jobs").insert({client_id:cl.id, machine:cl.map_machine, pass:"manual", requested_by:S.user.email,
+    audit_date:c.audit, detail:{kind:"apply"}}).select("id");
+  if (r.error){ toast("Not started: "+r.error.message); btn.disabled=false; return; }
+  M.confirmWrite = false;
+  toast(`Sent to ${cl.map_machine}. The tab updates as items are written.`);
+  await refresh(true);
+  const t0 = Date.now();
+  const tick = setInterval(async()=>{ await refresh(true); if (M.client) { await loadClientItems().catch(()=>{}); renderClientAudit(); }
+    if (!writeJob(cl, c.audit) || Date.now()-t0 > 30*60e3) clearInterval(tick); }, 15000);
+}
+
 function mapOpen(items){
   const byKind = {}; items.forEach(i=>(byKind[i.kind] ||= []).push(i));
   const kinds = [...KIND_ORDER.filter(k=>byKind[k]), ...Object.keys(byKind).filter(k=>!KIND_ORDER.includes(k))];
-  $("#mbody").innerHTML = items.length ? `<p class="muted small" style="margin-top:0">Approve sends it to the robot. Reject leaves it alone and stops it being suggested again. Something else: say what it should be.</p>
+  $("#mbody").innerHTML = items.length ? `<p class="muted small" style="margin-top:0">Pick the right button. When you're done, press "Write approved items to Pilot now" above. "None of these" leaves it unmapped and stops it being suggested again.</p>
     ${kinds.map(k=>`<h3 style="margin:18px 0 8px;font-size:15px">${esc(KIND_HEAD[k]||KIND[k]||k)} <span class="muted small">${byKind[k].length}</span></h3>
       <div class="actions">${byKind[k].map(cardHTML).join("")}</div>`).join("")}`
     : `<div class="center" style="min-height:30vh"><b>Nothing needs a person for this audit.</b><span class="muted">New items appear here after each mapping run.</span></div>`;
@@ -648,6 +688,18 @@ function mapOpen(items){
 }
 function cardHTML(i){
   const other = M.other===i.id;
+  const opts = Array.isArray(i.options) ? i.options : [];
+  if (opts.length) return `<div class="row" data-id="${esc(i.id)}" style="flex-direction:column;gap:10px">
+    <p><b>${esc(i.title)}</b><br><span class="muted small" style="white-space:normal">${esc(i.reason||"")}</span></p>
+    <div style="display:flex;flex-direction:column;gap:8px;align-items:stretch">
+      ${opts.map((o,k)=>`<button class="b ${k===0?"primary":""}" style="text-align:left" data-opt="${k}">${esc(o.label)}</button>`).join("")}
+    </div>
+    <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+      <button class="b" data-a="reject">None of these — leave it unmapped</button>
+      <a href="#" class="small" data-a="other" style="color:var(--muted)">Something different? Write it in</a></div>
+    ${other?`<div><label>What should it be?</label><textarea id="ot" placeholder="e.g. Map to Tito's Vodka, 1.5 oz"></textarea>
+      <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-a="other-save">Save</button><button class="b" data-a="other-cancel">Cancel</button></div></div>`:""}
+  </div>`;
   return `<div class="row" data-id="${esc(i.id)}" style="flex-wrap:wrap">
     <p style="min-width:260px"><b>${esc(i.title)}</b><br>
       <span>${esc(i.suggestion||"")}</span>${i.confidence!=null?` <span class="muted small">· ${pct(i.confidence)} sure</span>`:""}<br>
@@ -664,7 +716,20 @@ function cardHTML(i){
 function wireCards(){
   document.querySelectorAll("#mbody .row[data-id]").forEach(row=>{
     const id = row.dataset.id;
-    row.querySelectorAll("[data-a]").forEach(b=>b.onclick=async()=>{
+    row.querySelectorAll("[data-opt]").forEach(b=>b.onclick=async()=>{
+      const it = M.items.find(x=>x.id===id), o = (it.options||[])[+b.dataset.opt];
+      const now = new Date().toISOString();
+      const patch = {status:"decided", choice:"approve", chosen:o, suggestion:o.label, target:o.target||null,
+        target_type:o.type||null, delta_oz:o.pour_oz??null, decided_by:S.user.email, decided_at:now, updated_at:now};
+      row.querySelectorAll("button").forEach(x=>x.disabled=true);
+      const r = await sb.from("mapping_items").update(patch).eq("id",id).eq("status","open").select("id");
+      if (r.error){ toast("Not saved: "+r.error.message); row.querySelectorAll("button").forEach(x=>x.disabled=false); return; }
+      if (!r.data?.length) toast("Someone already decided this one.");
+      else toast(`Chosen: ${o.label}. Press "Write approved items to Pilot now" when you're ready.`);
+      Object.assign(it, patch); loadMapping().catch(()=>{}).then(render);
+    });
+    row.querySelectorAll("[data-a]").forEach(b=>b.onclick=async(e)=>{
+      e.preventDefault();
       const a = b.dataset.a;
       if (a==="other"){ M.other=id; renderClientAudit(); $("#ot")?.focus(); return; }
       if (a==="other-cancel"){ M.other=null; renderClientAudit(); return; }
@@ -675,7 +740,7 @@ function wireCards(){
       const r = await sb.from("mapping_items").update(patch).eq("id",id).eq("status","open").select("id");
       if (r.error){ toast("Not saved: "+r.error.message); b.disabled=false; return; }
       if (!r.data?.length) toast("Someone already decided this one.");
-      else toast({approve:"Approved — the robot does it on its next run.",reject:"Rejected — it won't be suggested again.",noted:"Noted.","other-save":"Saved — it'll be handled on the next run."}[a]);
+      else toast({approve:`Approved. Press "Write approved items to Pilot now" when you're ready.`,reject:"Left unmapped — it won't be suggested again.",noted:"Noted.","other-save":"Saved. A written answer needs Claude to read it before it can go into Pilot."}[a]);
       M.other=null; const it = M.items.find(x=>x.id===id); if (it) Object.assign(it, patch);
       loadMapping().catch(()=>{}).then(render);
     });
@@ -769,7 +834,7 @@ function renderClients(){
     confirmPanel("Pull All Files for Tomorrow", `Preview pull for every client whose next audit is ${fmtLong(t)} (${due.length}: ${due.map(c=>c.client_display_name).join(", ")||"none"}). Files only — no dates or statuses change.`, "Pull the files", async()=>{ await queue({request_type:"run_all_tomorrow"}); }); };
 }
 
-const reqLabel = t => ({run_now:"Run Now",run_all_failed:"Run All Failed",run_preview:"Preview pull",run_all_tomorrow:"Pull All Files for Tomorrow"}[t]||t);
+const reqLabel = t => ({run_now:"Run Now",run_all_failed:"Run All Failed",run_preview:"Preview pull",run_all_tomorrow:"Pull All Files for Tomorrow",run_all_today:"3:00 AM pull (today's audits)"}[t]||t);
 
 function renderQueue(){
   const name = id => S.clients.find(c=>c.id===id)?.client_display_name || (id?"(deleted client)":"");
