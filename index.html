@@ -686,11 +686,20 @@ function mapOpen(items){
     : `<div class="center" style="min-height:30vh"><b>Nothing needs a person for this audit.</b><span class="muted">New items appear here after each mapping run.</span></div>`;
   wireCards();
 }
+/* MOD vs menu item (Dave 11/12): a modifier rides on an item that already pours and is mapped
+   differently, so every card says which it is. The robot puts it at the start of the reason. */
+function lineTag(reason){
+  const m = /^(Modifier|Menu item) — /.exec(reason||"");
+  if (!m) return ["", reason||""];
+  const mod = m[1]==="Modifier";
+  return [`<span class="tag ${mod?"amber":"blue"}" title="${mod?"A choice added to a menu item that already pours":"A menu item rung in on its own"}">${mod?"MODIFIER":"MENU ITEM"}</span> `, (reason||"").slice(m[0].length)];
+}
 function cardHTML(i){
   const other = M.other===i.id;
   const opts = Array.isArray(i.options) ? i.options : [];
+  const [tag, why] = lineTag(i.reason);
   if (opts.length) return `<div class="row" data-id="${esc(i.id)}" style="flex-direction:column;gap:10px">
-    <p><b>${esc(i.title)}</b><br><span class="muted small" style="white-space:normal">${esc(i.reason||"")}</span></p>
+    <p>${tag}<b>${esc(i.title)}</b><br><span class="muted small" style="white-space:normal">${esc(why)}</span></p>
     <div style="display:flex;flex-direction:column;gap:8px;align-items:stretch">
       ${opts.map((o,k)=>`<button class="b ${k===0?"primary":""}" style="text-align:left" data-opt="${k}">${esc(o.label)}</button>`).join("")}
     </div>
@@ -701,9 +710,9 @@ function cardHTML(i){
       <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-a="other-save">Save</button><button class="b" data-a="other-cancel">Cancel</button></div></div>`:""}
   </div>`;
   return `<div class="row" data-id="${esc(i.id)}" style="flex-wrap:wrap">
-    <p style="min-width:260px"><b>${esc(i.title)}</b><br>
+    <p style="min-width:260px">${tag}<b>${esc(i.title)}</b><br>
       <span>${esc(i.suggestion||"")}</span>${i.confidence!=null?` <span class="muted small">· ${pct(i.confidence)} sure</span>`:""}<br>
-      <span class="muted small" style="white-space:normal">${esc(i.reason||"")}</span></p>
+      <span class="muted small" style="white-space:normal">${esc(why)}</span></p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
       ${i.kind==="unmapped"?`<button class="b" data-a="noted">Noted</button><button class="b" data-a="other">Something else</button>`
         :i.kind==="stuck"?`<button class="b primary" data-a="other">Tell it what this is</button><button class="b" data-a="reject">Leave it unmapped</button>`
