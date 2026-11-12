@@ -695,7 +695,7 @@ function cardHTML(i){
       ${opts.map((o,k)=>`<button class="b ${k===0?"primary":""}" style="text-align:left" data-opt="${k}">${esc(o.label)}</button>`).join("")}
     </div>
     <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
-      <button class="b" data-a="reject">None of these — leave it unmapped</button>
+      <button class="b" data-a="reject">${i.kind==="fix"?"Keep it as it is":"None of these — leave it unmapped"}</button>
       <a href="#" class="small" data-a="other" style="color:var(--muted)">Something different? Write it in</a></div>
     ${other?`<div><label>What should it be?</label><textarea id="ot" placeholder="e.g. Map to Tito's Vodka, 1.5 oz"></textarea>
       <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-a="other-save">Save</button><button class="b" data-a="other-cancel">Cancel</button></div></div>`:""}
