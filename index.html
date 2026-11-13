@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Barmetrix File Pulls</title>
+<title>Barmetrix Command Center</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
@@ -256,7 +256,7 @@ async function setUser(u){
   if (!was) { await refresh(); startTimer(); }
 }
 function signInScreen(err){
-  $("#app").innerHTML = `<div class="center"><h1 style="margin:0">Barmetrix File Pulls</h1>
+  $("#app").innerHTML = `<div class="center"><h1 style="margin:0">Barmetrix Command Center</h1>
     <p class="muted" style="max-width:420px">Sign in with your barmetrix.com Google account.</p>
     ${err?`<div class="msg err">${esc(err)}</div>`:""}
     <button class="b primary big" id="g">Sign in with Google</button></div>`;
@@ -267,7 +267,7 @@ function signInScreen(err){
 function render(){
   if (!S.user) return;
   const v = S.view;
-  $("#app").innerHTML = `<header><h1>Barmetrix File Pulls</h1>
+  $("#app").innerHTML = `<header><h1>Barmetrix Command Center</h1>
     <nav>${[["clients","Clients"],["mapping",`Mapping${openTotal()?` <span class="tag amber">${openTotal()}</span>`:""}`],["dbreview",`Database review${dbOpenTotal()?` <span class="tag amber">${dbOpenTotal()}</span>`:""}`],["queue","Run queue"],["history","Pull history"]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
     <div class="who"><span>${esc(S.user.email)}</span><button class="b" id="out">Sign out</button></div></header>
     <main id="main"></main>`;
