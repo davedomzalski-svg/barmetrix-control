@@ -45,6 +45,7 @@ textarea{min-height:80px}
 .banner.blue{background:var(--blue-bg);border-color:var(--blue)}
 .banner.amber{background:var(--amber-bg);border-color:var(--amber)}
 .tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
 table{border-collapse:collapse;width:100%;min-width:980px}
 th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
 th{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:500;background:var(--panel);position:sticky;top:0}
@@ -236,8 +237,37 @@ async function loadPulls(){
   if (q.error) throw q.error;
   S.pulls = q.data;
 }
+/* ---------- changes: every change any computer makes (table change_log, STEP 11; Dave 11/14/2026) ---------- */
+const CH = {ready:true, rows:[], area:"", machine:"", seenKey:"bmx_changes_seen"};
+const CH_AREAS = {server:"Poller, adapters and server", robot:"Mapping robot", command_center:"Command Center", database:"Database", other:"Other"};
+async function loadChanges(){
+  const q = await sb.from("change_log").select("*").order("created_at",{ascending:false}).limit(300);
+  if (q.error){ CH.ready = !/relation|does not exist|schema cache/i.test(q.error.message); if (!CH.ready) return; throw q.error; }
+  CH.ready = true; CH.rows = q.data;
+}
+function chSeen(){ try { return localStorage.getItem(CH.seenKey) || ""; } catch(e){ return ""; } }
+const chNew = () => CH.rows.filter(r=>r.created_at > chSeen()).length;
+function renderChanges(){
+  if (!CH.ready){ $("#main").innerHTML = `<div class="msg info"><b>The change log isn't switched on in the database yet.</b> Run "STEP 11 - SUPABASE - change log" (Google Drive → My Drive → Barmetrix Automation) in the Supabase SQL Editor, then reload this page.</div>`; return; }
+  const seen = chSeen();
+  const machines = [...new Set(CH.rows.map(r=>r.machine))].sort();
+  $("#main").innerHTML = `<p class="muted">Every change any computer makes to the poller, the adapters, the mapping robot, the Command Center or the database, newest first. Each computer's Claude reads the others' changes before it answers you.</p>
+    <div class="bar"><select id="cha" style="max-width:240px"><option value="">Every area</option>${Object.entries(CH_AREAS).map(([k,l])=>`<option value="${k}" ${CH.area===k?"selected":""}>${esc(l)}</option>`).join("")}</select>
+    <select id="chm" style="max-width:200px"><option value="">Every computer</option>${machines.map(m=>`<option ${CH.machine===m?"selected":""}>${esc(m)}</option>`).join("")}</select></div>
+    <div class="tablewrap"><table><thead><tr><th>When</th><th>Computer</th><th>Area</th><th>What changed</th><th>State</th></tr></thead><tbody>
+    ${CH.rows.filter(r=>(!CH.area||r.area===CH.area)&&(!CH.machine||r.machine===CH.machine)).map(r=>`<tr>
+      <td class="mono">${fmtTime(r.created_at)}${r.created_at>seen&&seen?' <span class="tag blue">new</span>':""}</td>
+      <td>${esc(r.machine)}</td><td>${esc(CH_AREAS[r.area]||r.area)}</td>
+      <td style="white-space:normal;min-width:320px"><b>${esc(r.title)}</b>${r.version?` <span class="muted small">${esc(r.version)}</span>`:""}${r.detail?`<div class="small">${esc(r.detail)}</div>`:""}${r.files?.length?`<div class="muted small">${esc(r.files.map(f=>f.split("/").pop()).join(", "))}</div>`:""}</td>
+      <td>${r.status==="live"?'<span class="tag green">Live</span>':r.status==="staged"?'<span class="tag amber">Not live yet</span>':'<span class="tag">Undone</span>'}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No changes recorded yet.</td></tr>'}
+    </tbody></table></div>`;
+  $("#cha").onchange = e=>{ CH.area = e.target.value; renderChanges(); };
+  $("#chm").onchange = e=>{ CH.machine = e.target.value; renderChanges(); };
+  try { if (CH.rows[0]) localStorage.setItem(CH.seenKey, CH.rows[0].created_at); } catch(e){}
+}
+
 async function refresh(quiet){
-  try { await Promise.all([loadClients(), loadQueue(), loadMapping().catch(()=>{}), loadDb().catch(()=>{})]); if (S.view==="history") await loadPulls(); render(); }
+  try { await Promise.all([loadClients(), loadQueue(), loadMapping().catch(()=>{}), loadDb().catch(()=>{}), loadChanges().catch(()=>{})]); if (S.view==="history") await loadPulls(); render(); }
   catch(e){ if(!quiet) toast("Could not load: "+(e.message||e)); }
 }
 function startTimer(){ clearInterval(S.timer); S.timer = setInterval(()=>{ if(!S.edit && !M.other && !M.flag && !(S.view==="mapping" && M.search) && !(S.view==="dbreview" && D.client) && document.visibilityState==="visible") refresh(true); }, 60000); }
@@ -268,12 +298,12 @@ function render(){
   if (!S.user) return;
   const v = S.view;
   $("#app").innerHTML = `<header><h1>Barmetrix Command Center</h1>
-    <nav>${[["clients","Clients"],["mapping",`Mapping${openTotal()?` <span class="tag amber">${openTotal()}</span>`:""}`],["dbreview",`Database review${dbOpenTotal()?` <span class="tag amber">${dbOpenTotal()}</span>`:""}`],["queue","Run queue"],["history","Pull history"]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
+    <nav>${[["clients","Clients"],["mapping",`Mapping${openTotal()?` <span class="tag amber">${openTotal()}</span>`:""}`],["dbreview",`Database review${dbOpenTotal()?` <span class="tag amber">${dbOpenTotal()}</span>`:""}`],["queue","Run queue"],["history","Pull history"],["changes",`Changes${chNew()&&chSeen()?` <span class="tag blue">${chNew()}</span>`:""}`]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
     <div class="who"><span>${esc(S.user.email)}</span><button class="b" id="out">Sign out</button></div></header>
     <main id="main"></main>`;
-  document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); if(S.view==="mapping") await loadMapping().catch(e=>toast(e.message)); if(S.view==="dbreview") await loadDb().catch(e=>toast(e.message)); render(); });
+  document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); if(S.view==="mapping") await loadMapping().catch(e=>toast(e.message)); if(S.view==="dbreview") await loadDb().catch(e=>toast(e.message)); if(S.view==="changes") await loadChanges().catch(e=>toast(e.message)); render(); });
   $("#out").onclick = ()=>sb.auth.signOut();
-  if (v==="clients") renderClients(); else if (v==="mapping") renderMapping(); else if (v==="dbreview") renderDb(); else if (v==="queue") renderQueue(); else renderHistory();
+  if (v==="clients") renderClients(); else if (v==="mapping") renderMapping(); else if (v==="dbreview") renderDb(); else if (v==="queue") renderQueue(); else if (v==="changes") renderChanges(); else renderHistory();
 }
 
 /* ---------- database review: dead recipes first (more checks join later) ----------
@@ -477,9 +507,89 @@ async function loadClientItems(){
     if (r.data.length < 1000) break;
   }
   M.items = out;
+  await loadNotes();
   const a = c.cid ? await sb.from("mapping_summary").select("audit_date").eq("client_id",c.cid)
                   : await sb.from("mapping_summary").select("audit_date").eq("venue",c.venue);
   M.audits = [...new Set((a.data||[]).map(r=>r.audit_date).filter(Boolean))].sort().reverse();
+}
+
+/* ---------- client notes (Dave 11/13): questions to ask the client + what we mapped and why.
+   One list per client; the team copies it into the client email, and the email writer reads the
+   same table. Arrives with STEP 10 - until then the panel explains how to switch it on. ---------- */
+async function loadNotes(){
+  const c = M.client; M.notes = [];
+  if (!c || !c.cid){ M.hasNotes = false; return; }
+  let q = sb.from("client_notes").select("*").eq("client_id", c.cid);
+  if (c.audit && c.audit!=="all") q = q.or(`audit_date.eq.${c.audit},status.eq.open`);
+  const r = await q.order("kind").order("created_at");
+  if (r.error){ M.hasNotes = !/relation|does not exist|schema cache/i.test(r.error.message); return; }
+  M.hasNotes = true; M.notes = r.data;
+}
+const noteId = (c, kind, key) => `${c.cid}--${c.audit||"none"}--${kind}--${String(key).toLowerCase().replace(/[^a-z0-9]+/g,"-").slice(0,80)}`;
+function draftQuestion(i){
+  const why = lineTag(i.reason)[1].replace(/\s+/g," ").trim();
+  return `We saw "${i.title}" on the sales report. ${why} Can you tell us what goes in it (each spirit and how many ounces)?`;
+}
+function notesText(){
+  const live = (M.notes||[]).filter(n=>n.status!=="dropped");
+  const q = live.filter(n=>n.kind==="question"), n = live.filter(n=>n.kind==="note");
+  return [q.length?"Questions:\n"+q.map(x=>"- "+x.text).join("\n"):"", n.length?"Notes from this audit:\n"+n.map(x=>"- "+x.text).join("\n"):""]
+    .filter(Boolean).join("\n\n");
+}
+function notesPanel(){
+  const c = M.client;
+  if (!c.cid) return "";
+  if (!M.hasNotes) return `<div class="msg info"><b>Client notes aren't switched on yet.</b> Run "STEP 10 - SUPABASE - client notes" (Google Drive → My Drive → Barmetrix Automation) in the Supabase SQL Editor, then reload.</div>`;
+  const live = M.notes.filter(n=>n.status!=="dropped");
+  const qn = live.filter(n=>n.kind==="question").length, nn = live.length - qn;
+  const row = n => `<div class="row" data-note="${esc(n.id)}" style="align-items:flex-start;gap:10px">
+      <span class="tag ${n.kind==="question"?"amber":"blue"}">${n.kind==="question"?"QUESTION":"NOTE"}</span>
+      <p style="flex:1;margin:0;white-space:normal">${esc(n.text)}${n.answer?`<br><span class="small"><b>Answer:</b> ${esc(n.answer)}</span>`:""}
+        <br><span class="muted small">${esc(n.created_by==="robot"?"robot":(n.created_by||"").split("@")[0])} · ${n.status==="sent"?"sent "+esc(fmtTime(n.sent_at)):n.status}</span></p>
+      <span style="display:flex;gap:6px">${n.status==="open"?`<button class="b" data-ns="sent">Mark sent</button>`:""}<button class="b" data-ns="dropped" title="Leave it out of the email">Remove</button></span></div>`;
+  return `<details class="card" id="notes" ${M.notesOpen?"open":""} style="margin:0 0 14px">
+    <summary style="cursor:pointer"><b>Client notes</b> <span class="muted small">${qn} question${qn===1?"":"s"} · ${nn} note${nn===1?"":"s"}</span></summary>
+    <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
+      ${live.map(row).join("") || `<span class="muted small">Nothing yet. Press "Ask the client" on any item, or add a note below.</span>`}
+      <div class="bar" style="margin:6px 0 0"><button class="b primary" id="ncopy" ${live.length?"":"disabled"}>Copy for the email</button>
+        <span class="grow"></span><button class="b" id="nadd">Add a note</button></div>
+      ${M.noteDraft!=null?`<div><label>Note or question for ${esc(clientOf(c.cid)?.client_display_name||"")}</label>
+        <textarea id="nt">${esc(M.noteDraft)}</textarea>
+        <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-nk="question">Save as a question</button>
+          <button class="b" data-nk="note">Save as a note</button><button class="b" id="ncancel">Cancel</button></div></div>`:""}
+    </div></details>`;
+}
+function wireNotes(){
+  const d = $("#notes"); if (!d) return;
+  d.ontoggle = ()=>{ M.notesOpen = d.open; };
+  $("#ncopy")?.addEventListener("click", async()=>{
+    const t = notesText();
+    try{ await navigator.clipboard.writeText(t); toast("Copied. Paste it into the client email."); }
+    catch(e){ const ta = document.createElement("textarea"); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); toast("Copied."); }
+  });
+  $("#nadd")?.addEventListener("click", ()=>{ M.noteDraft = ""; M.notesOpen = true; renderClientAudit(); $("#nt")?.focus(); });
+  $("#ncancel")?.addEventListener("click", ()=>{ M.noteDraft = null; renderClientAudit(); });
+  d.querySelectorAll("[data-nk]").forEach(b=>b.onclick=async()=>{
+    const t = ($("#nt").value||"").trim(); if (!t){ toast("Write it first."); return; }
+    await saveNote(b.dataset.nk, t, null, "manual-"+Date.now());
+    M.noteDraft = null; renderClientAudit();
+  });
+  d.querySelectorAll("[data-note] [data-ns]").forEach(b=>b.onclick=async()=>{
+    const id = b.closest("[data-note]").dataset.note, now = new Date().toISOString();
+    const patch = {status:b.dataset.ns, updated_at:now, ...(b.dataset.ns==="sent"?{sent_at:now}:{})};
+    const r = await sb.from("client_notes").update(patch).eq("id",id);
+    if (r.error){ toast("Not saved: "+r.error.message); return; }
+    await loadNotes(); renderClientAudit();
+  });
+}
+async function saveNote(kind, text, item, key){
+  const c = M.client, now = new Date().toISOString();
+  const row = {id:noteId(c, kind, key), client_id:c.cid, venue:item?.venue || clientOf(c.cid)?.client_display_name || c.venue,
+    audit_date:(c.audit && c.audit!=="all") ? c.audit : (item?.audit_date||null), kind, text, item_id:item?.id||null,
+    status:"open", created_by:S.user.email, created_at:now, updated_at:now};
+  const r = await sb.from("client_notes").upsert(row);
+  if (r.error){ toast("Not saved: "+r.error.message); return false; }
+  await loadNotes(); return true;
 }
 
 /* which clients have an audit on a given day: the schedule (cycle from the next / last audit date) */
@@ -629,8 +739,10 @@ function renderClientAudit(){
     </div>
     ${cl?"":`<div class="msg info">These items came from a Pilot venue name that doesn't match a client in the Clients tab. They still work; Claude links them on the next run.</div>`}
     ${writeNowBar(cl, c, it)}
+    ${notesPanel()}
     <div class="tabs" style="padding:0;margin:0 0 14px">${tabs.map(([k,l,n])=>`<button data-mt="${k}" class="${M.tab===k?"on":""}">${l} (${n})</button>`).join("")}</div>
     <div id="mbody"></div>`;
+  wireNotes();
   $("#mback").onclick = ()=>{ M.client=null; M.items=[]; render(); };
   $("#mwrite")?.addEventListener("click", ()=>{ M.confirmWrite=true; renderClientAudit(); });
   $("#mwrite-no")?.addEventListener("click", ()=>{ M.confirmWrite=false; renderClientAudit(); });
@@ -694,18 +806,35 @@ function lineTag(reason){
   const mod = m[1]==="Modifier";
   return [`<span class="tag ${mod?"amber":"blue"}" title="${mod?"A choice added to a menu item that already pours":"A menu item rung in on its own"}">${mod?"MODIFIER":"MENU ITEM"}</span> `, (reason||"").slice(m[0].length)];
 }
+function askBox(i){
+  return M.ask===i.id ? `<div style="flex-basis:100%"><label>Question for the client (it goes on the Client notes list)</label>
+      <textarea id="aq">${esc(draftQuestion(i))}</textarea>
+      <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-a="ask-save">Add to the client questions</button><button class="b" data-a="ask-cancel">Cancel</button></div></div>` : "";
+}
 function cardHTML(i){
   const other = M.other===i.id;
-  const opts = Array.isArray(i.options) ? i.options : [];
+  // the client-question choice is now its own button (Ask the client), not an answer option
+  const opts = (Array.isArray(i.options) ? i.options : []).filter(o=>o.action!=="CLIENT_QUESTION");
+  const askBtn = M.hasNotes && i.client_id ? `<button class="b" data-a="ask">Ask the client</button>` : "";
   const [tag, why] = lineTag(i.reason);
+  if (!opts.length && (i.options||[]).length) return `<div class="row" data-id="${esc(i.id)}" style="flex-direction:column;gap:10px">
+    <p>${tag}<b>${esc(i.title)}</b><br><span class="muted small" style="white-space:normal">${esc(why)}</span></p>
+    <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">${askBtn}
+      <button class="b" data-a="reject">Leave it unmapped</button>
+      <a href="#" class="small" data-a="other" style="color:var(--muted)">Something different? Write it in</a></div>
+    ${askBox(i)}
+    ${other?`<div><label>What should it be?</label><textarea id="ot" placeholder="e.g. Map to Tito's Vodka, 1.5 oz"></textarea>
+      <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-a="other-save">Save</button><button class="b" data-a="other-cancel">Cancel</button></div></div>`:""}
+  </div>`;
   if (opts.length) return `<div class="row" data-id="${esc(i.id)}" style="flex-direction:column;gap:10px">
     <p>${tag}<b>${esc(i.title)}</b><br><span class="muted small" style="white-space:normal">${esc(why)}</span></p>
     <div style="display:flex;flex-direction:column;gap:8px;align-items:stretch">
       ${opts.map((o,k)=>`<button class="b ${k===0?"primary":""}" style="text-align:left" data-opt="${k}">${esc(o.label)}</button>`).join("")}
     </div>
     <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
-      <button class="b" data-a="reject">${i.kind==="fix"?"Keep it as it is":"None of these — leave it unmapped"}</button>
+      <button class="b" data-a="reject">${i.kind==="fix"?"Keep it as it is":"None of these — leave it unmapped"}</button>${askBtn}
       <a href="#" class="small" data-a="other" style="color:var(--muted)">Something different? Write it in</a></div>
+    ${askBox(i)}
     ${other?`<div><label>What should it be?</label><textarea id="ot" placeholder="e.g. Map to Tito's Vodka, 1.5 oz"></textarea>
       <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-a="other-save">Save</button><button class="b" data-a="other-cancel">Cancel</button></div></div>`:""}
   </div>`;
@@ -717,7 +846,8 @@ function cardHTML(i){
       ${i.kind==="unmapped"?`<button class="b" data-a="noted">Noted</button><button class="b" data-a="other">Something else</button>`
         :i.kind==="stuck"?`<button class="b primary" data-a="other">Tell it what this is</button><button class="b" data-a="reject">Leave it unmapped</button>`
         :i.kind==="trash"?`<button class="b primary" data-a="approve">Trash it</button><button class="b" data-a="reject">Don't trash</button><button class="b" data-a="other">Something else</button>`
-        :`<button class="b primary" data-a="approve">Approve</button><button class="b" data-a="reject">Reject</button><button class="b" data-a="other">Something else</button>`}</div>
+        :`<button class="b primary" data-a="approve">Approve</button><button class="b" data-a="reject">Reject</button><button class="b" data-a="other">Something else</button>`}${askBtn}</div>
+    ${askBox(i)}
     ${other?`<div style="flex-basis:100%"><label>What should it be?</label><textarea id="ot" placeholder="e.g. Map to Tito's Vodka, 1.5 oz pour — or: trash it"></textarea>
       <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-a="other-save">Save</button><button class="b" data-a="other-cancel">Cancel</button></div></div>`:""}
   </div>`;
@@ -740,8 +870,24 @@ function wireCards(){
     row.querySelectorAll("[data-a]").forEach(b=>b.onclick=async(e)=>{
       e.preventDefault();
       const a = b.dataset.a;
-      if (a==="other"){ M.other=id; renderClientAudit(); $("#ot")?.focus(); return; }
+      if (a==="other"){ M.other=id; M.ask=null; renderClientAudit(); $("#ot")?.focus(); return; }
       if (a==="other-cancel"){ M.other=null; renderClientAudit(); return; }
+      if (a==="ask"){ M.ask=id; M.other=null; renderClientAudit(); $("#aq")?.focus(); return; }
+      if (a==="ask-cancel"){ M.ask=null; renderClientAudit(); return; }
+      if (a==="ask-save"){
+        const t = ($("#aq").value||"").trim(); if (!t){ toast("Write the question first."); return; }
+        const it = M.items.find(x=>x.id===id); b.disabled = true;
+        if (!await saveNote("question", t, it, id)){ b.disabled = false; return; }
+        const now = new Date().toISOString();
+        const patch = {status:"applied", choice:"ask_client", decided_by:S.user.email, decided_at:now,
+          applied_at:now, applied_detail:"On the client question list: "+t, updated_at:now};
+        const r = await sb.from("mapping_items").update(patch).eq("id",id).eq("status","open").select("id");
+        if (r.error) toast("Question saved, but the item didn't move: "+r.error.message);
+        else toast("Added to the client questions. It's under Client notes at the top of this page.");
+        M.ask=null; M.notesOpen=true; if (it) Object.assign(it, patch);
+        loadMapping().catch(()=>{}).then(render);
+        return;
+      }
       const now = new Date().toISOString();
       let patch = {status:"decided", choice:a, decided_by:S.user.email, decided_at:now, updated_at:now};
       if (a==="other-save"){ const t = ($("#ot").value||"").trim(); if (!t){ toast("Write what it should be first."); return; } patch.choice="other"; patch.other_text=t; }
@@ -765,7 +911,8 @@ function mapTable(list, empty, canFlag){
     $("#mcount").textContent = `${rows.length} item${rows.length===1?"":"s"}`;
     $("#mrows").innerHTML = rows.map(i=>{
       const who = i.decided_by ? i.decided_by.split("@")[0] : i.decided_note || (i.status==="robot"||i.status==="failed" ? "robot" : "");
-      const what = i.choice==="wrong" ? `Flagged wrong → ${esc(i.other_text||"")}` : i.choice==="other" ? `Changed → ${esc(i.other_text||"")}` :
+      const what = i.choice==="ask_client" ? `<span class="tag amber">Asked the client</span>` :
+        i.choice==="wrong" ? `Flagged wrong → ${esc(i.other_text||"")}` : i.choice==="other" ? `Changed → ${esc(i.other_text||"")}` :
         i.choice==="reject" ? "Rejected" : i.choice==="noted" ? "Noted" : esc(i.suggestion||i.applied_detail||"");
       return `<tr style="cursor:default"><td><b>${esc(i.title)}</b></td><td>${kindTag(i.kind)}</td>
         <td style="white-space:normal;max-width:340px">${i.status==="failed"?'<span class="tag red">Failed</span> ':""}${what}${i.applied_detail&&i.choice?`<div class="muted small">${esc(i.applied_detail)}</div>`:""}</td>
