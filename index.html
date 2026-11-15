@@ -181,6 +181,22 @@ async function loadClients(){
 }
 /* ---------- mapping machines ---------- */
 const MACHINE_FRESH = 15*60e3;
+// Robot computers that need a person (Dave 11/15: no silent failures). Only computers that map a client.
+const machineProblems = () => {
+  const mapping = new Set(S.clients.filter(c=>c.map_enabled && c.map_machine).map(c=>c.map_machine));
+  const out = [];
+  for (const m of (S.machines||[])){
+    if (!mapping.has(m.name)) continue;
+    const v = m.agent_version||"", who = m.name.replace(/^MIAMI-/,"");
+    if (Date.now()-new Date(m.last_checkin) > MACHINE_FRESH)
+      out.push(`<b>${esc(who)}</b> hasn't checked in (last seen ${esc(ago(m.last_checkin))}): its clients won't map. Make sure it is on and signed in to Windows.`);
+    if (/reasoning (FAILS|NO)/.test(v))
+      out.push(`<b>${esc(who)}</b>: the robot's Claude can't answer, so every new button waits for you. On ${esc(who)}, double-click <b>SIGN IN - robot Claude</b> in Drive › Barmetrix Automation › Mapping Robot.`);
+    if (/task (MISSING|has NO next run)/.test(v))
+      out.push(`<b>${esc(who)}</b>: the robot's 5-minute restart is broken. On ${esc(who)}, double-click <b>INSTALL</b> in Drive › Barmetrix Automation › Mapping Robot.`);
+  }
+  return out;
+};
 const normName = s => String(s||"").toLowerCase().replace(/&/g,"and").replace(/[^a-z0-9]/g,"");
 const holdersOf = c => !c.pilot_name ? [] : S.machines.filter(m=>(m.clients_held||[]).some(h=>normName(h.name)===normName(c.pilot_name)));
 const ago = ts => { if (!ts) return "never"; const m = Math.round((Date.now()-new Date(ts))/6e4); return m<1?"just now":m<60?`${m} min ago`:m<1440?`${Math.round(m/60)} h ago`:`${Math.round(m/1440)} days ago`; };
@@ -1022,7 +1038,9 @@ function renderClients(){
   const paused = cs.filter(c=>(c.status||"").toLowerCase()==="paused");
   const active = S.queue.filter(r=>r.status==="pending" || (r.status==="running" && Date.now()-new Date(r.started_at||r.requested_at) < 2*3600e3));
   const name = id => S.clients.find(c=>c.id===id)?.client_display_name || "";
+  const mp = S.hasMapCols ? machineProblems() : [];
   $("#main").innerHTML = `
+    ${mp.length?`<div class="banner red"><b>Robot computers need you (${mp.length})</b>${mp.map(x=>`<div>${x}</div>`).join("")}</div>`:""}
     ${failed.length?`<div class="banner red"><b>Failed pulls (${failed.length})</b>${failed.map(c=>esc(c.client_display_name)).join(", ")}</div>`:""}
     ${delayed.length?`<div class="banner blue"><b>Toast data delay — dates held (${delayed.length})</b>${delayed.map(c=>`${esc(c.client_display_name)} <span class="muted">(Toast data to ${esc(c.toast_data_delay_last_update||"?")})</span>`).join(", ")}<div class="small muted">To re-pull: Run Now (the dates advance once Toast has caught up). If the missing time was after the venue closed: open the client and choose "Delay reviewed".</div></div>`:""}
     ${paused.length?`<div class="banner amber"><b>Paused clients (${paused.length})</b>${paused.map(c=>esc(c.client_display_name)).join(", ")}</div>`:""}
