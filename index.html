@@ -50,6 +50,14 @@ textarea{min-height:80px}
 th.sortable{cursor:pointer;user-select:none}
 th.sortable:hover{color:var(--text,inherit)}
 th .arr{font-size:10px}
+.mapcell{display:inline-flex;align-items:center;gap:8px}
+.sw{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:999px;padding:3px 10px 3px 4px;font:inherit;font-size:12px;cursor:pointer}
+.sw i{width:26px;height:14px;border-radius:999px;background:var(--line);position:relative;transition:background .15s}
+.sw i::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:#fff;transition:left .15s}
+.sw.on{color:inherit;font-weight:600}
+.sw.on i{background:#2e9d5b}
+.sw.on i::after{left:14px}
+.b.sm{padding:3px 8px;font-size:12px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
 table{border-collapse:collapse;width:100%;min-width:980px}
 th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
@@ -992,7 +1000,19 @@ const CL_COLS = [
   ["fintech","Fintech", c=>hasFintech(c)?(c.fintech_last_pull_status||""):""],
   ["toast","Toast data", c=>c.source_system==="toast"?(c.toast_data_delay||""):""],
   ["status","Status", c=>(STATUSES.find(s=>s[0]===(c.status||"").toLowerCase())||[0,c.status||""])[1]],
+  ["map","Mapping", c=>(c.map_enabled?"a ":"b ")+(c.map_machine||"")],
 ];
+// Mapping column: the on/off switch and "Finish mapping" right on the list (Dave 11/15: "WAY too buried")
+const mapCell = c => !S.hasMapCols ? '<span class="muted">—</span>' : `<span class="mapcell">
+  <button class="sw ${c.map_enabled?"on":""}" data-sw="${esc(c.id)}" title="${c.map_enabled?"Mapping ON: the robot maps every audit. Click to turn off.":"Mapping OFF. Click to turn on."}"><i></i>${c.map_enabled?"On":"Off"}</button>
+  ${c.map_machine?`<span class="small muted">${esc(c.map_machine.replace(/^MIAMI-/,""))}</span><button class="b sm" data-fin="${esc(c.id)}" title="Run the mapping now on ${esc(c.map_machine)} - for after the client's files arrive">Finish mapping</button>`:'<span class="small muted">no computer</span>'}</span>`;
+async function setMapOn(c, on, btn){
+  if (on && !c.map_machine){ toast("Pick the computer that maps this client first (open the client → Mapping)."); return; }
+  btn.disabled = true;
+  const r = await sb.from("clients").update({map_enabled:on}).eq("id",c.id).select("id");
+  if (r.error || !r.data?.length){ toast("Not saved: "+(r.error?.message||"no permission")); btn.disabled=false; return; }
+  c.map_enabled = on; toast(`${c.client_display_name}: mapping ${on?"ON":"OFF"}`); render();
+}
 let CL_SORT = (()=>{ try { return JSON.parse(localStorage.getItem("bmx_client_sort")) || {k:"name",dir:1}; } catch(e){ return {k:"name",dir:1}; } })();
 
 function renderClients(){
@@ -1031,8 +1051,11 @@ function renderClients(){
         <td>${AUTOMATED.has(c.source_system)?statusTag(c.last_pull_status):'<span class="tag">—</span>'}</td>
         <td>${hasFintech(c)?statusTag(c.fintech_last_pull_status):'<span class="tag">—</span>'}</td>
         <td>${c.source_system!=="toast"||!c.toast_data_delay?'<span class="muted">—</span>':c.toast_data_delay==="delayed"?`<span class="tag blue">Delay · ${esc(c.toast_data_delay_last_update||"?")}</span>`:c.toast_data_delay==="realtime"?'<span class="tag green">Current</span>':'<span class="tag">Unknown</span>'}</td>
-        <td>${esc((STATUSES.find(s=>s[0]===(c.status||"").toLowerCase())||[0,c.status])[1])}</td></tr>`).join("");
+        <td>${esc((STATUSES.find(s=>s[0]===(c.status||"").toLowerCase())||[0,c.status])[1])}</td>
+        <td>${mapCell(c)}</td></tr>`).join("");
     document.querySelectorAll("#rows tr").forEach(tr=>tr.onclick=()=>openEditor(S.clients.find(c=>c.id===tr.dataset.id)));
+    document.querySelectorAll("[data-sw]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); const c = S.clients.find(x=>x.id===b.dataset.sw); setMapOn(c, !c.map_enabled, b); });
+    document.querySelectorAll("[data-fin]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); mapNow(S.clients.find(x=>x.id===b.dataset.fin), null, b); });
   };
   draw(); $("#q").oninput = draw;
   document.querySelectorAll("th.sortable").forEach(th=>th.onclick=()=>{
