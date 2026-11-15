@@ -45,6 +45,11 @@ textarea{min-height:80px}
 .banner.blue{background:var(--blue-bg);border-color:var(--blue)}
 .banner.amber{background:var(--amber-bg);border-color:var(--amber)}
 .tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.tablewrap.tall{overflow:auto;max-height:calc(100vh - 200px)}
+.tablewrap.tall th{z-index:2;box-shadow:0 1px 0 var(--line)}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--text,inherit)}
+th .arr{font-size:10px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
 table{border-collapse:collapse;width:100%;min-width:980px}
 th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
@@ -491,7 +496,32 @@ async function loadMapping(){
   const seen = new Map();
   qs.forEach(q=>q.data.forEach(r=>seen.set([r.client_id,r.venue,r.audit_date,r.status,r.flagged].join("|"), r)));
   M.sum = [...seen.values()];
+  // where each client's mapping stands (table map_status, STEP 12; written by the robot as it works)
+  const ms = await sb.from("map_status").select("*").gte("audit_date",M.weekStart).lte("audit_date",end);
+  M.status = ms.error ? null : ms.data;
   if (M.client) await loadClientItems();
+}
+/* the status line: pre-map -> main map -> count -> after-count -> import, and what is still waiting on whom */
+function statusLine(cid, day, big){
+  if (!M.status) return "";
+  const rows = M.status.filter(r=>r.client_id===cid && r.audit_date===day);
+  if (!rows.length) return "";
+  const t = ts => ts ? new Date(ts).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}) : "";
+  return rows.map(r=>{
+    const p = (r.detail||{}).passes||{}, multi = rows.length>1;
+    const step = (ok, label, sub) => `<span class="tag ${ok?"green":""}" title="${esc(sub||"")}">${ok?"✓ ":""}${esc(label)}</span>`;
+    const now = r.state==="running" ? `<span class="tag blue">Mapping now on ${esc(r.machine)} · ${esc({premap:"pre-map",main:"main map",after_count:"after the count"}[r.pass]||r.pass)}</span>`
+      : r.state==="waiting_pilot" ? `<span class="tag amber">Waiting: Pilot is open on ${esc(r.machine)}</span>`
+      : r.state==="failed" ? `<span class="tag red" title="${esc(r.summary||"")}">Last pass failed</span>` : "";
+    const wait = [r.waiting_client?`<span class="tag amber">${r.waiting_client} waiting on the client</span>`:"",
+                  r.waiting_count?`<span class="tag blue">${r.waiting_count} waiting on the count</span>`:"",
+                  r.waiting_us?`<span class="tag red">${r.waiting_us} waiting on us</span>`:""].join("");
+    return `<span class="small" style="display:flex;flex-direction:column;gap:4px">
+      ${multi?`<b class="small">${esc(r.venue)}</b>`:""}
+      <span class="chips">${step(p.premap,"Pre-map")}${step(p.main,"Main map")}${step(p.after_count,"Count in")}${step(p.after_count,"After-count map")}${step(r.imported_at,"Imported", r.imported_at?t(r.imported_at):"")}</span>
+      ${now||wait?`<span class="chips">${now}${wait}</span>`:""}
+      ${big&&r.summary?`<span class="muted">${esc(r.summary)} · ${esc(r.machine)} · ${esc(t(r.finished_at||r.started_at))}</span>`:""}
+    </span>`; }).join("");
 }
 async function loadClientItems(){
   const c = M.client, out = [];
@@ -664,6 +694,7 @@ function renderMapping(){
         <b>${esc(x.name)}</b>
         <span class="small muted">${x.client?esc([POS_PREFIX[x.client.source_system]||"", cyc].filter(Boolean).join(" · ")):'<span class="tag red">Not linked to a client</span>'}</span>
         ${ms?`<span class="small"><span class="tag ${ms.cls}">${esc(ms.txt)}</span></span>`:""}
+        ${x.cid?statusLine(x.cid, M.day):""}
         ${jobs.length?`<span class="small" style="display:flex;flex-direction:column;gap:3px">${jobs.slice(0,4).reverse().map(j=>`<span>${jobLine(j)}</span>`).join("")}</span>`:""}
         ${x.client && (x.client.map_enabled || waitJob)?`<span class="chips">${waitJob?`<button class="b primary" data-imp="${esc(waitJob.id)}">Import now</button>`:""}${x.client.map_machine?`<button class="b" data-mapnow="${esc(x.cid)}">Map now</button>`:""}</span>`:""}
         <span class="chips">
@@ -738,6 +769,7 @@ function renderClientAudit(){
         ${c.audit===null?'<option value="" selected>No audit date</option>':""}<option value="all" ${c.audit==="all"?"selected":""}>All audits</option></select>
     </div>
     ${cl?"":`<div class="msg info">These items came from a Pilot venue name that doesn't match a client in the Clients tab. They still work; Claude links them on the next run.</div>`}
+    ${c.cid && c.audit && c.audit!=="all" && statusLine(c.cid, c.audit, true) ? `<div class="card" style="margin:0 0 14px">${statusLine(c.cid, c.audit, true)}</div>` : ""}
     ${writeNowBar(cl, c, it)}
     ${notesPanel()}
     <div class="tabs" style="padding:0;margin:0 0 14px">${tabs.map(([k,l,n])=>`<button data-mt="${k}" class="${M.tab===k?"on":""}">${l} (${n})</button>`).join("")}</div>
@@ -949,6 +981,20 @@ function flagWrong(i){
   };
 }
 
+// Clients tab columns: [key, header, sort value]. Click a header to sort A→Z / oldest first; click again to reverse.
+const CL_COLS = [
+  ["name","Client", c=>c.client_display_name||""],
+  ["pos","POS", c=>(SOURCES.find(s=>s[0]===c.source_system)||[0,c.source_system||""])[1]],
+  ["cycle","Cycle", c=>(CYCLES.find(s=>s[0]===c.audit_cycle)||[0,c.audit_cycle||""])[1]],
+  ["last","Last audit", c=>c.last_pulled_date||""],
+  ["next","Next audit", c=>c.next_due_date||""],
+  ["sales","Sales", c=>AUTOMATED.has(c.source_system)?(c.last_pull_status||""):""],
+  ["fintech","Fintech", c=>hasFintech(c)?(c.fintech_last_pull_status||""):""],
+  ["toast","Toast data", c=>c.source_system==="toast"?(c.toast_data_delay||""):""],
+  ["status","Status", c=>(STATUSES.find(s=>s[0]===(c.status||"").toLowerCase())||[0,c.status||""])[1]],
+];
+let CL_SORT = (()=>{ try { return JSON.parse(localStorage.getItem("bmx_client_sort")) || {k:"name",dir:1}; } catch(e){ return {k:"name",dir:1}; } })();
+
 function renderClients(){
   const cs = S.clients;
   const failed = cs.filter(c=>isFailed(c) && !isDelayed(c));
@@ -965,12 +1011,17 @@ function renderClients(){
       <button class="b" id="tom">Pull All Files for Tomorrow</button>
       <button class="b" id="raf">Run All Failed</button>
       <button class="b primary" id="add">Add client</button></div>
-    <div class="tablewrap"><table><thead><tr><th>Client</th><th>POS</th><th>Cycle</th><th>Last audit</th><th>Next audit</th><th>Sales</th><th>Fintech</th><th>Toast data</th><th>Status</th></tr></thead>
+    <div class="tablewrap tall"><table><thead><tr>${CL_COLS.map(([k,l])=>`<th class="sortable" data-k="${k}">${l}<span class="arr">${CL_SORT.k===k?(CL_SORT.dir>0?" ▲":" ▼"):""}</span></th>`).join("")}</tr></thead>
     <tbody id="rows"></tbody></table></div>
     <p class="small muted">Refreshes every 60 seconds. Updated ${new Date().toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})}.</p>`;
   const draw = () => {
     const t = ($("#q").value||"").toLowerCase();
-    $("#rows").innerHTML = cs.filter(c=>!t || (c.client_display_name||"").toLowerCase().includes(t)).map(c=>`
+    const val = CL_COLS.find(x=>x[0]===CL_SORT.k)?.[2];
+    const list = cs.filter(c=>!t || (c.client_display_name||"").toLowerCase().includes(t));
+    if (val) list.sort((a,b)=>{ const x = val(a), y = val(b);
+      if (!x && !y) return 0; if (!x) return 1; if (!y) return -1;          // blanks always at the bottom
+      return CL_SORT.dir * String(x).localeCompare(String(y), "en", {numeric:true, sensitivity:"base"}); });
+    $("#rows").innerHTML = list.map(c=>`
       <tr class="${rowClass(c)}" data-id="${c.id}">
         <td><b>${esc(c.client_display_name)}</b></td>
         <td>${esc((SOURCES.find(s=>s[0]===c.source_system)||[0,c.source_system])[1])}</td>
@@ -984,6 +1035,12 @@ function renderClients(){
     document.querySelectorAll("#rows tr").forEach(tr=>tr.onclick=()=>openEditor(S.clients.find(c=>c.id===tr.dataset.id)));
   };
   draw(); $("#q").oninput = draw;
+  document.querySelectorAll("th.sortable").forEach(th=>th.onclick=()=>{
+    CL_SORT = CL_SORT.k===th.dataset.k ? {k:th.dataset.k, dir:-CL_SORT.dir} : {k:th.dataset.k, dir:1};
+    try { localStorage.setItem("bmx_client_sort", JSON.stringify(CL_SORT)); } catch(e){}
+    document.querySelectorAll("th.sortable").forEach(h=>h.querySelector(".arr").textContent = CL_SORT.k===h.dataset.k?(CL_SORT.dir>0?" ▲":" ▼"):"");
+    draw();
+  });
   $("#add").onclick = ()=>openEditor(null);
   $("#raf").onclick = ()=>confirmPanel("Run All Failed", `Re-runs every failed client (${failed.length} now: ${failed.map(c=>c.client_display_name).join(", ")||"none"}). Fintech runs first for clients that have it. Starts within about a minute.`, "Run All Failed", async()=>{ await queue({request_type:"run_all_failed"}); });
   $("#tom").onclick = ()=>{ const t = addDays(todayISO(),1); const due = cs.filter(c=>c.status==="active" && c.next_due_date===t && c.last_pulled_date);
