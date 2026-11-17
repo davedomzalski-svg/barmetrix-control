@@ -855,11 +855,31 @@ async function writeNow(cl, c, btn){
 function mapOpen(items){
   const byKind = {}; items.forEach(i=>(byKind[i.kind] ||= []).push(i));
   const kinds = [...KIND_ORDER.filter(k=>byKind[k]), ...Object.keys(byKind).filter(k=>!KIND_ORDER.includes(k))];
-  $("#mbody").innerHTML = items.length ? `<p class="muted small" style="margin-top:0">Pick the right button. When you're done, press "Write approved items to Pilot now" above. "None of these" leaves it unmapped and stops it being suggested again.</p>
+  /* Dave 11/17: "Once you are behind, I have to take over" - one button clears every open question he has handled
+     by hand in Pilot, so the robot never writes them a second time. Pilot's own mappings teach the robot. */
+  const clearBar = !items.length ? "" : M.confirmClear
+    ? `<div class="banner amber"><b>Clear all ${items.length} open question${items.length>1?"s":""} below?</b>
+        Use this when you've mapped or trashed them yourself in Pilot. They move to Finished as "done by hand in Pilot" and the robot won't touch them. The robot learns your answers from Pilot itself on its next run.
+        <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" id="mclear-yes">Yes, clear them</button><button class="b" id="mclear-no">Not now</button></div></div>`
+    : `<div class="bar"><button class="b" id="mclear">I mapped these in Pilot myself: clear all ${items.length} questions</button></div>`;
+  $("#mbody").innerHTML = items.length ? `${clearBar}<p class="muted small" style="margin-top:0">Pick the right button. When you're done, press "Write approved items to Pilot now" above. "None of these" leaves it unmapped and stops it being suggested again.</p>
     ${kinds.map(k=>`<h3 style="margin:18px 0 8px;font-size:15px">${esc(KIND_HEAD[k]||KIND[k]||k)} <span class="muted small">${byKind[k].length}</span></h3>
       <div class="actions">${byKind[k].map(cardHTML).join("")}</div>`).join("")}`
     : `<div class="center" style="min-height:30vh"><b>Nothing needs a person for this audit.</b><span class="muted">New items appear here after each mapping run.</span></div>`;
   wireCards();
+  const mc = $("#mclear"); if (mc) mc.onclick = ()=>{ M.confirmClear = true; mapOpen(items); };
+  const mn = $("#mclear-no"); if (mn) mn.onclick = ()=>{ M.confirmClear = false; mapOpen(items); };
+  const my = $("#mclear-yes"); if (my) my.onclick = async()=>{
+    my.disabled = true;
+    const now = new Date().toISOString();
+    const r = await sb.from("mapping_items").update({status:"applied", applied_at:now, applied_detail:"done by hand in Pilot",
+      decided_by:S.user.email, decided_at:now, updated_at:now}).in("id", items.map(i=>i.id)).eq("status","open").select("id");
+    M.confirmClear = false;
+    if (r.error){ toast("Not cleared: "+r.error.message); my.disabled = false; return; }
+    toast(`Cleared ${(r.data||[]).length} question${(r.data||[]).length===1?"":"s"}.`);
+    await refresh(true);
+    if (M.client) { await loadClientItems().catch(()=>{}); renderClientAudit(); }
+  };
 }
 /* MOD vs menu item (Dave 11/12): a modifier rides on an item that already pours and is mapped
    differently, so every card says which it is. The robot puts it at the start of the reason. */
