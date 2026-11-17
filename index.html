@@ -51,6 +51,7 @@ th.sortable{cursor:pointer;user-select:none}
 th.sortable:hover{color:var(--text,inherit)}
 th .arr{font-size:10px}
 .mapcell{display:inline-flex;align-items:center;gap:8px}
+input.ord{width:56px;padding:3px 6px;text-align:center}
 .sw{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:999px;padding:3px 10px 3px 4px;font:inherit;font-size:12px;cursor:pointer}
 .sw i{width:26px;height:14px;border-radius:999px;background:var(--line);position:relative;transition:background .15s}
 .sw i::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:#fff;transition:left .15s}
@@ -172,6 +173,12 @@ async function loadClients(){
   if (q.error && S.hasDelayCols && /column/i.test(q.error.message)) { S.hasDelayCols = false; return loadClients(); }
   if (q.error) throw q.error;
   S.clients = q.data;
+  // STEP 13 (11/16): the run order on each client + the ONE master switch for all robot mapping
+  const o = await sb.from("clients").select("id,map_order").is("deleted_at",null);
+  S.hasOrderCol = !o.error;
+  if (!o.error){ const by = new Map(o.data.map(r=>[r.id, r.map_order])); S.clients.forEach(c=>c.map_order = by.get(c.id) ?? null); }
+  const ms = await sb.from("robot_settings").select("value,updated_by,updated_at").eq("key","mapping").maybeSingle();
+  S.master = (ms.error || !ms.data) ? null : {on: !!(ms.data.value||{}).on, by: ms.data.updated_by, at: ms.data.updated_at};
   if (S.hasMapCols){
     const m = await sb.from("machines").select("*").order("name");
     S.machines = m.error ? [] : m.data;
@@ -1016,8 +1023,33 @@ const CL_COLS = [
   ["fintech","Fintech", c=>hasFintech(c)?(c.fintech_last_pull_status||""):""],
   ["toast","Toast data", c=>c.source_system==="toast"?(c.toast_data_delay||""):""],
   ["status","Status", c=>(STATUSES.find(s=>s[0]===(c.status||"").toLowerCase())||[0,c.status||""])[1]],
+  ["order","Run order", c=>c.map_order==null?"":String(c.map_order).padStart(3,"0")],
   ["map","Mapping", c=>(c.map_enabled?"a ":"b ")+(c.map_machine||"")],
 ];
+const clCols = () => CL_COLS.filter(c=>c[0]!=="order" || S.hasOrderCol);
+// Run order (Dave 11/16): 1st, 2nd, 3rd ... - who the robot writes in Pilot first when files land together.
+const orderCell = c => `<input class="ord" type="number" min="1" max="99" data-ord="${esc(c.id)}" value="${c.map_order??""}" placeholder="—" title="Run order: 1 = written in Pilot first. Blank = after the numbered ones.">`;
+async function setOrder(c, v, el){
+  const n = v==="" ? null : Math.max(1, Math.min(99, parseInt(v,10)||0)) || null;
+  const r = await sb.from("clients").update({map_order:n}).eq("id",c.id).select("id");
+  if (r.error || !r.data?.length){ toast("Not saved: "+(r.error?.message||"no permission")); el.value = c.map_order??""; return; }
+  c.map_order = n; toast(`${c.client_display_name}: run order ${n??"blank"}`);
+}
+// THE master switch (Dave 11/16: "an easier way to turn all venues off that does not take a 1 by 1 to turn them back on")
+const masterBar = () => {
+  if (!S.master) return "";
+  const on = S.master.on, n = S.clients.filter(c=>c.map_enabled).length;
+  return `<div class="banner ${on?"blue":"amber"}" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <button class="sw ${on?"on":""}" id="master" style="transform:scale(1.25)"><i></i>${on?"On":"Off"}</button>
+    <div><b>Robot mapping, all clients: ${on?"ON":"OFF"}</b>
+      <div class="small">${on?`The robot maps the ${n} client(s) whose own switch is On.`:`Nothing is written to Pilot by any robot. Each client's own switch below is kept (${n} On), so turning this back on needs no clicking through.`}
+      ${S.master.by?` <span class="muted">· last changed by ${esc(String(S.master.by).split("@")[0])} ${esc(ago(S.master.at))}</span>`:""}</div></div></div>`;
+};
+async function setMaster(on){
+  const r = await sb.from("robot_settings").update({value:{on}, updated_by:S.user.email, updated_at:new Date().toISOString()}).eq("key","mapping").select("key");
+  if (r.error || !r.data?.length){ toast("Not saved: "+(r.error?.message||"no permission")); return; }
+  S.master = {on, by:S.user.email, at:new Date().toISOString()}; toast(`Robot mapping ${on?"ON":"OFF"} for all clients`); render();
+}
 // Mapping column: the on/off switch and "Finish mapping" right on the list (Dave 11/15: "WAY too buried")
 const mapCell = c => !S.hasMapCols ? '<span class="muted">—</span>' : `<span class="mapcell">
   <button class="sw ${c.map_enabled?"on":""}" data-sw="${esc(c.id)}" title="${c.map_enabled?"Mapping ON: the robot maps every audit. Click to turn off.":"Mapping OFF. Click to turn on."}"><i></i>${c.map_enabled?"On":"Off"}</button>
@@ -1040,6 +1072,7 @@ function renderClients(){
   const name = id => S.clients.find(c=>c.id===id)?.client_display_name || "";
   const mp = S.hasMapCols ? machineProblems() : [];
   $("#main").innerHTML = `
+    ${S.hasMapCols?masterBar():""}
     ${mp.length?`<div class="banner red"><b>Robot computers need you (${mp.length})</b>${mp.map(x=>`<div>${x}</div>`).join("")}</div>`:""}
     ${failed.length?`<div class="banner red"><b>Failed pulls (${failed.length})</b>${failed.map(c=>esc(c.client_display_name)).join(", ")}</div>`:""}
     ${delayed.length?`<div class="banner blue"><b>Toast data delay — dates held (${delayed.length})</b>${delayed.map(c=>`${esc(c.client_display_name)} <span class="muted">(Toast data to ${esc(c.toast_data_delay_last_update||"?")})</span>`).join(", ")}<div class="small muted">To re-pull: Run Now (the dates advance once Toast has caught up). If the missing time was after the venue closed: open the client and choose "Delay reviewed".</div></div>`:""}
@@ -1049,7 +1082,7 @@ function renderClients(){
       <button class="b" id="tom">Pull All Files for Tomorrow</button>
       <button class="b" id="raf">Run All Failed</button>
       <button class="b primary" id="add">Add client</button></div>
-    <div class="tablewrap tall"><table><thead><tr>${CL_COLS.map(([k,l])=>`<th class="sortable" data-k="${k}">${l}<span class="arr">${CL_SORT.k===k?(CL_SORT.dir>0?" ▲":" ▼"):""}</span></th>`).join("")}</tr></thead>
+    <div class="tablewrap tall"><table><thead><tr>${clCols().map(([k,l])=>`<th class="sortable" data-k="${k}">${l}<span class="arr">${CL_SORT.k===k?(CL_SORT.dir>0?" ▲":" ▼"):""}</span></th>`).join("")}</tr></thead>
     <tbody id="rows"></tbody></table></div>
     <p class="small muted">Refreshes every 60 seconds. Updated ${new Date().toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})}.</p>`;
   const draw = () => {
@@ -1070,7 +1103,10 @@ function renderClients(){
         <td>${hasFintech(c)?statusTag(c.fintech_last_pull_status):'<span class="tag">—</span>'}</td>
         <td>${c.source_system!=="toast"||!c.toast_data_delay?'<span class="muted">—</span>':c.toast_data_delay==="delayed"?`<span class="tag blue">Delay · ${esc(c.toast_data_delay_last_update||"?")}</span>`:c.toast_data_delay==="realtime"?'<span class="tag green">Current</span>':'<span class="tag">Unknown</span>'}</td>
         <td>${esc((STATUSES.find(s=>s[0]===(c.status||"").toLowerCase())||[0,c.status])[1])}</td>
+        ${S.hasOrderCol?`<td>${orderCell(c)}</td>`:""}
         <td>${mapCell(c)}</td></tr>`).join("");
+    document.querySelectorAll("[data-ord]").forEach(el=>{ el.onclick=e=>e.stopPropagation();
+      el.onchange=()=>setOrder(S.clients.find(x=>x.id===el.dataset.ord), el.value.trim(), el); });
     document.querySelectorAll("#rows tr").forEach(tr=>tr.onclick=()=>openEditor(S.clients.find(c=>c.id===tr.dataset.id)));
     document.querySelectorAll("[data-sw]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); const c = S.clients.find(x=>x.id===b.dataset.sw); setMapOn(c, !c.map_enabled, b); });
     document.querySelectorAll("[data-fin]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); mapNow(S.clients.find(x=>x.id===b.dataset.fin), null, b); });
@@ -1083,6 +1119,11 @@ function renderClients(){
     draw();
   });
   $("#add").onclick = ()=>openEditor(null);
+  if ($("#master")) $("#master").onclick = ()=>{
+    if (S.master.on) return setMaster(false);                      // OFF: at once, no questions
+    const on = S.clients.filter(c=>c.map_enabled);
+    confirmPanel("Turn robot mapping ON", `The robot will map and write to Pilot for the ${on.length} client(s) whose own switch is On: ${on.map(c=>c.client_display_name).join(", ")||"none"}.`, "Turn it ON", ()=>setMaster(true));
+  };
   $("#raf").onclick = ()=>confirmPanel("Run All Failed", `Re-runs every failed client (${failed.length} now: ${failed.map(c=>c.client_display_name).join(", ")||"none"}). Fintech runs first for clients that have it. Starts within about a minute.`, "Run All Failed", async()=>{ await queue({request_type:"run_all_failed"}); });
   $("#tom").onclick = ()=>{ const t = addDays(todayISO(),1); const due = cs.filter(c=>c.status==="active" && c.next_due_date===t && c.last_pulled_date);
     confirmPanel("Pull All Files for Tomorrow", `Preview pull for every client whose next audit is ${fmtLong(t)} (${due.length}: ${due.map(c=>c.client_display_name).join(", ")||"none"}). Files only — no dates or statuses change.`, "Pull the files", async()=>{ await queue({request_type:"run_all_tomorrow"}); }); };
