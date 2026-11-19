@@ -96,6 +96,17 @@ label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;font-wei
 .actions{display:flex;flex-direction:column;gap:10px}
 .actions .row{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:12px}
 .actions .row p{margin:0;flex:1}
+/* Dave 11/18: mapping questions "kind of mush together" - each one is its own numbered card */
+.actions.qlist{gap:18px;counter-reset:q}
+.actions.qlist .row{background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--accent);border-radius:10px;
+  padding:14px 16px 16px;box-shadow:0 1px 3px rgba(0,0,0,.10);counter-increment:q}
+.actions.qlist .row.mod{border-left-color:var(--amber)}
+.actions.qlist .row.menu{border-left-color:var(--blue)}
+.actions.qlist .row > p:first-child{padding-bottom:10px;border-bottom:1px solid var(--line);width:100%}
+.actions.qlist .row > p:first-child > b{font-size:16px}
+.actions.qlist .row > p:first-child::before{content:counter(q);display:inline-flex;align-items:center;justify-content:center;
+  min-width:24px;height:24px;padding:0 6px;margin-right:8px;border-radius:999px;background:var(--grey-bg);color:var(--ink);
+  font-weight:600;font-size:13px;vertical-align:1px}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:8px;z-index:30;max-width:90vw}
 .center{min-height:70vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center}
 .days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:12px}
@@ -965,7 +976,7 @@ function mapOpen(items){
     : `<div class="bar"><button class="b" id="mclear">I mapped these in Pilot myself: clear all ${items.length} questions</button></div>`;
   $("#mbody").innerHTML = items.length ? `${clearBar}<p class="muted small" style="margin-top:0">Pick the right button. When you're done, press "Write approved items to Pilot now" above. "None of these" leaves it unmapped and stops it being suggested again.</p>
     ${kinds.map(k=>`<h3 style="margin:18px 0 8px;font-size:15px">${esc(KIND_HEAD[k]||KIND[k]||k)} <span class="muted small">${byKind[k].length}</span></h3>
-      <div class="actions">${byKind[k].map(cardHTML).join("")}</div>`).join("")}`
+      <div class="actions qlist">${byKind[k].map(cardHTML).join("")}</div>`).join("")}`
     : `<div class="center" style="min-height:30vh"><b>Nothing needs a person for this audit.</b><span class="muted">New items appear here after each mapping run.</span></div>`;
   wireCards();
   const mc = $("#mclear"); if (mc) mc.onclick = ()=>{ M.confirmClear = true; mapOpen(items); };
@@ -997,11 +1008,12 @@ function askBox(i){
 }
 function cardHTML(i){
   const other = M.other===i.id;
+  const side = /^Modifier — /.test(i.reason||"") ? "mod" : /^Menu item — /.test(i.reason||"") ? "menu" : "";
   // the client-question choice is now its own button (Ask the client), not an answer option
   const opts = (Array.isArray(i.options) ? i.options : []).filter(o=>o.action!=="CLIENT_QUESTION");
   const askBtn = M.hasNotes && i.client_id ? `<button class="b" data-a="ask">Ask the client</button>` : "";
   const [tag, why] = lineTag(i.reason);
-  if (!opts.length && (i.options||[]).length) return `<div class="row" data-id="${esc(i.id)}" style="flex-direction:column;gap:10px">
+  if (!opts.length && (i.options||[]).length) return `<div class="row ${side}" data-id="${esc(i.id)}" style="flex-direction:column;gap:10px">
     <p>${tag}<b>${esc(i.title)}</b><br><span class="muted small" style="white-space:normal">${esc(why)}</span></p>
     <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">${askBtn}
       <button class="b" data-a="reject">Leave it unmapped</button>
@@ -1010,7 +1022,7 @@ function cardHTML(i){
     ${other?`<div><label>What should it be?</label><textarea id="ot" placeholder="e.g. Map to Tito's Vodka, 1.5 oz"></textarea>
       <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-a="other-save">Save</button><button class="b" data-a="other-cancel">Cancel</button></div></div>`:""}
   </div>`;
-  if (opts.length) return `<div class="row" data-id="${esc(i.id)}" style="flex-direction:column;gap:10px">
+  if (opts.length) return `<div class="row ${side}" data-id="${esc(i.id)}" style="flex-direction:column;gap:10px">
     <p>${tag}<b>${esc(i.title)}</b><br><span class="muted small" style="white-space:normal">${esc(why)}</span></p>
     <div style="display:flex;flex-direction:column;gap:8px;align-items:stretch">
       ${opts.map((o,k)=>`<button class="b ${k===0?"primary":""}" style="text-align:left" data-opt="${k}">${esc(o.label)}</button>`).join("")}
@@ -1022,7 +1034,7 @@ function cardHTML(i){
     ${other?`<div><label>What should it be?</label><textarea id="ot" placeholder="e.g. Map to Tito's Vodka, 1.5 oz"></textarea>
       <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-a="other-save">Save</button><button class="b" data-a="other-cancel">Cancel</button></div></div>`:""}
   </div>`;
-  return `<div class="row" data-id="${esc(i.id)}" style="flex-wrap:wrap">
+  return `<div class="row ${side}" data-id="${esc(i.id)}" style="flex-wrap:wrap">
     <p style="min-width:260px">${tag}<b>${esc(i.title)}</b><br>
       <span>${esc(i.suggestion||"")}</span>${i.confidence!=null?` <span class="muted small">· ${pct(i.confidence)} sure</span>`:""}<br>
       <span class="muted small" style="white-space:normal">${esc(why)}</span></p>
