@@ -44,6 +44,7 @@ textarea{min-height:80px}
 .banner.red{background:var(--red-bg);border-color:var(--red)}
 .banner.blue{background:var(--blue-bg);border-color:var(--blue)}
 .banner.amber{background:var(--amber-bg);border-color:var(--amber)}
+.banner.green{background:var(--green-bg);border-color:var(--green)}
 .tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px}
 .tablewrap.tall{overflow:auto;max-height:calc(100vh - 200px)}
 .tablewrap.tall th{z-index:2;box-shadow:0 1px 0 var(--line)}
@@ -334,12 +335,92 @@ function render(){
   if (!S.user) return;
   const v = S.view;
   $("#app").innerHTML = `<header><h1>Barmetrix Command Center</h1>
-    <nav>${[["clients","Clients"],["mapping",`Mapping${openTotal()?` <span class="tag amber">${openTotal()}</span>`:""}`],["dbreview",`Database review${dbOpenTotal()?` <span class="tag amber">${dbOpenTotal()}</span>`:""}`],["queue","Run queue"],["history","Pull history"],["changes",`Changes${chNew()&&chSeen()?` <span class="tag blue">${chNew()}</span>`:""}`]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
+    <nav>${[["clients","Clients"],["computers","Computers"],["mapping",`Mapping${openTotal()?` <span class="tag amber">${openTotal()}</span>`:""}`],["dbreview",`Database review${dbOpenTotal()?` <span class="tag amber">${dbOpenTotal()}</span>`:""}`],["queue","Run queue"],["history","Pull history"],["changes",`Changes${chNew()&&chSeen()?` <span class="tag blue">${chNew()}</span>`:""}`]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
     <div class="who"><span>${esc(S.user.email)}</span><button class="b" id="out">Sign out</button></div></header>
     <main id="main"></main>`;
   document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); if(S.view==="mapping") await loadMapping().catch(e=>toast(e.message)); if(S.view==="dbreview") await loadDb().catch(e=>toast(e.message)); if(S.view==="changes") await loadChanges().catch(e=>toast(e.message)); render(); });
   $("#out").onclick = ()=>sb.auth.signOut();
-  if (v==="clients") renderClients(); else if (v==="mapping") renderMapping(); else if (v==="dbreview") renderDb(); else if (v==="queue") renderQueue(); else if (v==="changes") renderChanges(); else renderHistory();
+  if (v==="clients") renderClients(); else if (v==="computers") renderComputers(); else if (v==="mapping") renderMapping(); else if (v==="dbreview") renderDb(); else if (v==="queue") renderQueue(); else if (v==="changes") renderChanges(); else renderHistory();
+}
+
+/* ---------- Computers: who maps what (Dave 11/18: "I can not see how to set clients to a machine. Let's put this
+   in the top menu and make it super user friendly"). One row per client, tomorrow's audits first: a switch for robot
+   mapping and one button per computer, each saying whether that computer's Pilot holds the client and how fresh. */
+const CM = {q:""};
+const shortName = n => String(n||"").replace(/^MIAMI-/,"");
+const syncOf = (m, c) => (m.clients_held||[]).find(h=>normName(h.name)===normName(c.pilot_name||c.client_display_name));
+const daysAgo = ts => ts ? Math.floor((Date.now()-new Date(ts))/864e5) : null;
+function holdNote(m, c){
+  const h = syncOf(m, c);
+  if (!h) return {cls:"red", txt:"not in its Pilot"};
+  const d = daysAgo(h.last_sync);
+  const when = h.last_sync ? new Date(h.last_sync).toLocaleDateString("en-US",{month:"short",day:"numeric"}) : "never";
+  return d!=null && d>14 ? {cls:"amber", txt:`synced ${when} — sync it first`} : {cls:"green", txt:`holds it · synced ${when}`};
+}
+function renderComputers(){
+  if (!S.hasMapCols){ $("#main").innerHTML = `<div class="msg info">Mapping isn't switched on in the database yet.</div>`; return; }
+  const ms = (S.machines||[]).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const tom = addDays(todayISO(),1);
+  const live = S.clients.filter(c=>c.status==="active");
+  const t = CM.q.toLowerCase();
+  const rows = live.filter(c=>!t || c.client_display_name.toLowerCase().includes(t))
+    .sort((a,b)=>String(a.next_due_date||"9999").localeCompare(String(b.next_due_date||"9999")) || a.client_display_name.localeCompare(b.client_display_name));
+  const card = m => {
+    const on = Date.now()-new Date(m.last_checkin) <= MACHINE_FRESH;
+    const ver = (/robot (?:source \(published )?([\d.-]+)/.exec(m.agent_version||"")||[])[1] || "—";
+    const n = live.filter(c=>c.map_enabled && c.map_machine===m.name).length;
+    const nt = live.filter(c=>c.map_enabled && c.map_machine===m.name && c.next_due_date===tom).length;
+    return `<div class="card" style="flex:1;min-width:220px">
+      <div style="display:flex;align-items:center;gap:8px"><b style="font-size:16px">${esc(shortName(m.name))}</b>
+        <span class="tag ${on?"green":"red"}">${on?"On":"Off — not checking in"}</span></div>
+      <div class="small muted" style="margin-top:6px">Last seen ${esc(ago(m.last_checkin))} · Pilot ${m.pilot_running===true||String(m.pilot_running)==="True"?"open":"closed"} · robot ${esc(ver)}</div>
+      <div style="margin-top:6px"><b>${n}</b> client${n===1?"":"s"} to map${nt?` · <b>${nt}</b> tomorrow`:""}</div></div>`;
+  };
+  let lastGroup = null;
+  const group = c => c.next_due_date===tom ? `Tomorrow — ${fmtLong(tom)}` : !c.next_due_date ? "No audit date" : c.next_due_date < tom ? "Today or overdue" : "Later";
+  const row = c => {
+    const g = group(c);
+    const head = g!==lastGroup ? `<tr><td colspan="4" style="background:var(--grey-bg);font-weight:600">${esc(g)}</td></tr>` : "";
+    lastGroup = g;
+    const btns = ms.map(m=>{
+      const sel = c.map_machine===m.name, n = holdNote(m, c);
+      return `<button class="b sm ${sel?"primary":""}" data-pick="${esc(m.name)}" data-c="${esc(c.id)}" style="display:flex;flex-direction:column;align-items:flex-start;min-width:150px;padding:6px 10px">
+        <span>${sel?"✓ ":""}${esc(shortName(m.name))}</span><span class="small" style="opacity:.85">${esc(n.txt)}</span></button>`; }).join("");
+    const chosen = ms.find(m=>m.name===c.map_machine), note = chosen && holdNote(chosen, c);
+    const warn = !c.map_enabled ? "" : !c.map_machine ? `<span class="tag red">Pick a computer</span>`
+      : !chosen ? `<span class="tag red">${esc(shortName(c.map_machine))} isn't a robot computer any more — pick one</span>`
+      : note && note.cls!=="green" ? `<span class="tag ${note.cls}">${esc(shortName(chosen.name))}: ${esc(note.txt)}</span>` : `<span class="tag green">Ready</span>`;
+    return `${head}<tr style="cursor:default"><td><b>${esc(c.client_display_name)}</b>${c.pilot_name&&normName(c.pilot_name)!==normName(c.client_display_name)?`<div class="small muted">Pilot: ${esc(c.pilot_name)}</div>`:""}</td>
+      <td class="mono small">${c.next_due_date?esc(fmtDate(c.next_due_date)):"—"}</td>
+      <td><button class="sw ${c.map_enabled?"on":""}" data-tog="${esc(c.id)}"><i></i>${c.map_enabled?"Robot maps it":"Off"}</button></td>
+      <td><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${btns}${warn}</div></td></tr>`;
+  };
+  $("#main").innerHTML = `
+    <div class="bar" style="align-items:baseline"><h2 style="margin:0;font-size:22px">Computers — who maps what</h2>
+      <span class="grow"></span>${S.master?`<span class="tag ${S.master.on?"green":"red"}">Robot mapping ${S.master.on?"ON":"OFF"} for all</span>`:""}</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">${ms.map(card).join("") || '<span class="muted">No robot computer has checked in yet.</span>'}</div>
+    <div class="bar"><input id="cmq" placeholder="Find a client" value="${esc(CM.q)}" style="max-width:280px">
+      <span class="muted small">Click a computer to choose who maps the client. The switch turns the robot on or off for that client.</span></div>
+    <div class="tablewrap"><table style="min-width:760px"><thead><tr><th>Client</th><th>Next audit</th><th>Robot</th><th>Mapped on</th></tr></thead>
+      <tbody>${rows.map(row).join("") || '<tr><td colspan="4" class="muted">No clients.</td></tr>'}</tbody></table></div>`;
+  const q = $("#cmq"); q.oninput = ()=>{ CM.q = q.value; const pos = q.selectionStart; renderComputers(); const n=$("#cmq"); n.focus(); n.setSelectionRange(pos,pos); };
+  document.querySelectorAll("[data-pick]").forEach(b=>b.onclick=async()=>{
+    const c = S.clients.find(x=>x.id===b.dataset.c), m = b.dataset.pick;
+    if (c.map_machine===m) return;
+    b.disabled = true;
+    const r = await sb.from("clients").update({map_machine:m, map_machine_picked:true}).eq("id",c.id).select("id");
+    if (r.error || !r.data?.length){ toast("Not saved: "+(r.error?.message||"no row")); b.disabled=false; return; }
+    c.map_machine = m; c.map_machine_picked = true;
+    toast(`${c.client_display_name} now maps on ${shortName(m)}.`); renderComputers();
+  });
+  document.querySelectorAll("[data-tog]").forEach(b=>b.onclick=async()=>{
+    const c = S.clients.find(x=>x.id===b.dataset.tog), on = !c.map_enabled;
+    b.disabled = true;
+    const r = await sb.from("clients").update({map_enabled:on}).eq("id",c.id).select("id");
+    if (r.error || !r.data?.length){ toast("Not saved: "+(r.error?.message||"no row")); b.disabled=false; return; }
+    c.map_enabled = on;
+    toast(`${c.client_display_name}: robot mapping ${on?"on":"off"}.`); renderComputers();
+  });
 }
 
 /* ---------- database review: dead recipes first (more checks join later) ----------
@@ -597,7 +678,7 @@ function notesText(){
   return [q.length?"Questions:\n"+q.map(x=>"- "+x.text).join("\n"):"", n.length?"Notes from this audit:\n"+n.map(x=>"- "+x.text).join("\n"):""]
     .filter(Boolean).join("\n\n");
 }
-function notesPanel(){
+function notesPanel(asTab){
   const c = M.client;
   if (!c.cid) return "";
   if (!M.hasNotes) return `<div class="msg info"><b>Client notes aren't switched on yet.</b> Run "STEP 10 - SUPABASE - client notes" (Google Drive → My Drive → Barmetrix Automation) in the Supabase SQL Editor, then reload.</div>`;
@@ -608,16 +689,18 @@ function notesPanel(){
       <p style="flex:1;margin:0;white-space:normal">${esc(n.text)}${n.answer?`<br><span class="small"><b>Answer:</b> ${esc(n.answer)}</span>`:""}
         <br><span class="muted small">${esc(n.created_by==="robot"?"robot":(n.created_by||"").split("@")[0])} · ${n.status==="sent"?"sent "+esc(fmtTime(n.sent_at)):n.status}</span></p>
       <span style="display:flex;gap:6px">${n.status==="open"?`<button class="b" data-ns="sent">Mark sent</button>`:""}<button class="b" data-ns="dropped" title="Leave it out of the email">Remove</button></span></div>`;
-  return `<details class="card" id="notes" ${M.notesOpen?"open":""} style="margin:0 0 14px">
-    <summary style="cursor:pointer"><b>Client notes</b> <span class="muted small">${qn} question${qn===1?"":"s"} · ${nn} note${nn===1?"":"s"}</span></summary>
+  // one list, questions first, ONE copy button for all of them (Dave 11/18: "These need to be stored all together")
+  live.sort((a,b)=>(a.kind==="question"?0:1)-(b.kind==="question"?0:1) || String(a.created_at).localeCompare(String(b.created_at)));
+  return `<details class="card" id="notes" ${asTab||M.notesOpen?"open":""} style="margin:0 0 14px">
+    <summary style="cursor:pointer"><b>Questions and notes for ${esc(clientOf(c.cid)?.client_display_name||"the client")}</b> <span class="muted small">${qn} question${qn===1?"":"s"} · ${nn} note${nn===1?"":"s"} — everything for this client's email, in one place</span></summary>
     <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
-      ${live.map(row).join("") || `<span class="muted small">Nothing yet. Press "Ask the client" on any item, or add a note below.</span>`}
-      <div class="bar" style="margin:6px 0 0"><button class="b primary" id="ncopy" ${live.length?"":"disabled"}>Copy for the email</button>
+      <div class="bar" style="margin:0"><button class="b primary" id="ncopy" ${live.length?"":"disabled"}>Copy all ${live.length} for the email</button>
         <span class="grow"></span><button class="b" id="nadd">Add a note</button></div>
       ${M.noteDraft!=null?`<div><label>Note or question for ${esc(clientOf(c.cid)?.client_display_name||"")}</label>
         <textarea id="nt">${esc(M.noteDraft)}</textarea>
         <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-nk="question">Save as a question</button>
           <button class="b" data-nk="note">Save as a note</button><button class="b" id="ncancel">Cancel</button></div></div>`:""}
+      ${live.map(row).join("") || `<span class="muted small">Nothing yet. Press "Ask the client" on any question, or add a note above.</span>`}
     </div></details>`;
 }
 function wireNotes(){
@@ -788,7 +871,9 @@ function renderClientAudit(){
   const robot = it.filter(i=>(i.status==="robot"||i.status==="failed") && i.choice!=="wrong");
   const done = it.filter(i=>i.status==="applied" && i.choice!=="wrong");
   const audits = [...new Set([...(c.audit && c.audit!=="all"?[c.audit]:[]), ...M.audits])].sort().reverse();
-  const tabs = [["open","Needs a person",open.length],["waiting","Waiting for the robot",waiting.length],["robot","Mapped by the robot",robot.length],["done","Done",done.length]];
+  // Dave 11/18: client questions get their OWN place, all together - not buried in the answered list
+  const cq = (M.notes||[]).filter(n=>n.status!=="dropped" && n.kind==="question").length;
+  const tabs = [["open","Needs a person",open.length],["client","Questions for the client",cq],["waiting","Waiting for the robot",waiting.length],["robot","Mapped by the robot",robot.length],["done","Done",done.length]];
   $("#main").innerHTML = `
     <div class="bar"><button class="b" id="mback">‹ ${esc(fmtLong(M.day))}</button></div>
     <div class="bar" style="align-items:baseline">
@@ -800,12 +885,12 @@ function renderClientAudit(){
         ${c.audit===null?'<option value="" selected>No audit date</option>':""}<option value="all" ${c.audit==="all"?"selected":""}>All audits</option></select>
     </div>
     ${cl?"":`<div class="msg info">These items came from a Pilot venue name that doesn't match a client in the Clients tab. They still work; Claude links them on the next run.</div>`}
-    ${c.cid && c.audit && c.audit!=="all" && statusLine(c.cid, c.audit, true) ? `<div class="card" style="margin:0 0 14px">${statusLine(c.cid, c.audit, true)}</div>` : ""}
+    ${openBanner(open.length, waiting.length)}
+    <div class="tabs" style="padding:0;margin:0 0 14px">${tabs.map(([k,l,n])=>`<button data-mt="${k}" class="${M.tab===k?"on":""}">${l} (${n})${k==="open"&&n?' <span class="tag red">'+n+'</span>':""}</button>`).join("")}</div>
     ${writeNowBar(cl, c, it)}
-    ${notesPanel()}
-    <div class="tabs" style="padding:0;margin:0 0 14px">${tabs.map(([k,l,n])=>`<button data-mt="${k}" class="${M.tab===k?"on":""}">${l} (${n})</button>`).join("")}</div>
-    <div id="mbody"></div>`;
-  wireNotes();
+    <div id="mbody"></div>
+    ${c.cid && c.audit && c.audit!=="all" && statusLine(c.cid, c.audit, true) ? `<div class="card" style="margin:14px 0">${statusLine(c.cid, c.audit, true)}</div>` : ""}`;
+  $("#mshow")?.addEventListener("click", ()=>{ M.tab="open"; M.other=null; renderClientAudit(); $("#mbody")?.scrollIntoView({behavior:"smooth"}); });
   $("#mback").onclick = ()=>{ M.client=null; M.items=[]; render(); };
   $("#mwrite")?.addEventListener("click", ()=>{ M.confirmWrite=true; renderClientAudit(); });
   $("#mwrite-no")?.addEventListener("click", ()=>{ M.confirmWrite=false; renderClientAudit(); });
@@ -813,9 +898,20 @@ function renderClientAudit(){
   $("#maudit").onchange = async e=>{ M.client.audit = e.target.value===""?null:e.target.value; try{ await loadClientItems(); }catch(er){ toast(er.message); } renderClientAudit(); };
   document.querySelectorAll("[data-mt]").forEach(b=>b.onclick=()=>{ M.tab=b.dataset.mt; M.other=null; renderClientAudit(); });
   if (M.tab==="open") mapOpen(open);
+  else if (M.tab==="client"){ $("#mbody").innerHTML = notesPanel(true); wireNotes(); }
   else if (M.tab==="waiting") mapTable(waiting, "Nothing waiting. Decisions show here until the robot's next run carries them out.");
   else if (M.tab==="robot") mapTable(robot, "The robot hasn't mapped anything on its own for this audit.", true);
   else mapTable(done, "Nothing finished yet for this audit.");
+}
+
+/* Dave 11/18 (The Corner): the page "is showing a state of completion; however, the process is not even 1/2 done".
+   Open questions are the FIRST thing on the page, every time, in red - never below the client notes. */
+function openBanner(nOpen, nWaiting){
+  if (nOpen) return `<div class="banner red" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <b style="font-size:16px">${nOpen} question${nOpen>1?"s":""} still need${nOpen>1?"":"s"} you — this audit is NOT done.</b>
+      ${M.tab!=="open"?`<button class="b primary" id="mshow">Show them</button>`:""}</div>`;
+  if (nWaiting) return `<div class="banner amber"><b>Every question is answered.</b> ${nWaiting} answer${nWaiting>1?"s are":" is"} waiting to be written into Pilot.</div>`;
+  return `<div class="banner green"><b>Nothing open for this audit.</b></div>`;
 }
 
 /* "Write to Pilot now": approved items are written into Pilot by the client's mapping computer
@@ -833,9 +929,14 @@ function writeNowBar(cl, c, it){
   if (job) return `<div class="banner blue"><b>Writing to Pilot on ${esc(job.machine||"")}…</b>${job.status==="queued"?"Waiting for that computer to pick it up (under a minute when it's on).":"Running now. Pilot on that computer is in use until it finishes."}</div>`;
   const lastLine = last ? `<span class="muted small">Last write: ${esc(fmtTime(last.finished_at))} — ${esc(last.summary||last.status)}</span>` : "";
   if (!n) return lastLine ? `<div class="bar">${lastLine}</div>` : "";
-  if (M.confirmWrite) return `<div class="banner amber"><b>Write ${n} approved item${n>1?"s":""} into Pilot now?</b>
+  const nOpen = it.filter(i=>i.status==="open").length;
+  // Dave 11/18: "It has no check for when I click the start mapping button to see if there is anything open"
+  if (M.confirmWrite) return `<div class="banner ${nOpen?"red":"amber"}"><b>Write ${n} approved item${n>1?"s":""} into Pilot now?</b>
+      ${nOpen?`<div style="margin:6px 0"><b>${nOpen} question${nOpen>1?"s are":" is"} still open below.</b> They stay unmapped in Pilot until someone answers them. Answer them first, then write everything in one go.</div>`:""}
       Pilot on ${esc(cl.map_machine||"the mapping computer")} will close and reopen while it works (about a minute, plus 15 seconds per item). Make sure nobody is in the middle of something in Pilot on that computer.
-      <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" id="mwrite-yes">Yes, write them now</button><button class="b" id="mwrite-no">Not now</button></div></div>`;
+      <div style="margin-top:8px;display:flex;gap:8px">${nOpen
+        ?`<button class="b primary" id="mwrite-no">Answer the ${nOpen} open first</button><button class="b" id="mwrite-yes">Write the ${n} now anyway</button>`
+        :`<button class="b primary" id="mwrite-yes">Yes, write them now</button><button class="b" id="mwrite-no">Not now</button>`}</div></div>`;
   return `<div class="bar"><button class="b primary" id="mwrite">Write ${n} approved item${n>1?"s":""} to Pilot now</button>${lastLine}</div>`;
 }
 async function writeNow(cl, c, btn){
@@ -966,8 +1067,8 @@ function wireCards(){
           applied_at:now, applied_detail:"On the client question list: "+t, updated_at:now};
         const r = await sb.from("mapping_items").update(patch).eq("id",id).eq("status","open").select("id");
         if (r.error) toast("Question saved, but the item didn't move: "+r.error.message);
-        else toast("Added to the client questions. It's under Client notes at the top of this page.");
-        M.ask=null; M.notesOpen=true; if (it) Object.assign(it, patch);
+        else toast('Added. Every question for this client is on the "Questions for the client" tab.');
+        M.ask=null; if (it) Object.assign(it, patch);   // notes stay closed: they must never push open questions down
         loadMapping().catch(()=>{}).then(render);
         return;
       }
