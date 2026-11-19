@@ -1098,6 +1098,17 @@ function wireCards(){
   });
 }
 
+// Dave 11/19: the Type column says WHERE the line came from - Invoice, PMIX Mapping (menu item) or MOD Mapping
+// (modifier) - never "Mapped" (the result column already says mapped or trashed). The source tag the robot writes at
+// the front of the reason ("Modifier — ...", "Menu item, $9.00 a sale — ...") moves here; "auto:" is dropped.
+function lineType(i){
+  const r = i.reason||"";
+  const m = r.match(/^(Modifier|Menu item)(, \$[\d,.]+ a sale)? — /);
+  const src = i.kind==="invoice" ? "Invoice" : m ? (m[1]==="Modifier" ? "MOD Mapping" : "PMIX Mapping") : "Mapping (source unknown)";
+  const why = (m ? r.slice(m[0].length) : r).replace(/^auto:\s*/, "").replace(/^Claude:\s*/, "");
+  return {src, price: m && m[2] ? m[2].slice(2) : "", why};
+}
+const typeTag = t => `<span class="tag ${t.src==="MOD Mapping"?"amber":t.src==="PMIX Mapping"?"blue":t.src==="Invoice"?"":"red"}">${esc(t.src)}</span>${t.price?`<div class="muted small">${esc(t.price)}</div>`:""}`;
 function mapTable(list, empty, canFlag){
   $("#mbody").innerHTML = `<div class="bar"><input id="mq" placeholder="Search button or product" value="${esc(M.q)}" style="max-width:280px"><span class="grow"></span><span class="muted small" id="mcount"></span></div>
     <div class="tablewrap"><table><thead><tr><th>POS button</th><th>Type</th><th>What was done</th><th>Sure</th><th>Who / when</th><th>Why</th><th></th></tr></thead><tbody id="mrows"></tbody></table></div>`;
@@ -1110,10 +1121,11 @@ function mapTable(list, empty, canFlag){
       const what = i.choice==="ask_client" ? `<span class="tag amber">Asked the client</span>` :
         i.choice==="wrong" ? `Flagged wrong → ${esc(i.other_text||"")}` : i.choice==="other" ? `Changed → ${esc(i.other_text||"")}` :
         i.choice==="reject" ? "Rejected" : i.choice==="noted" ? "Noted" : esc(i.suggestion||i.applied_detail||"");
-      return `<tr style="cursor:default"><td><b>${esc(i.title)}</b></td><td>${kindTag(i.kind)}</td>
+      const lt = lineType(i);
+      return `<tr style="cursor:default"><td><b>${esc(i.title)}</b></td><td>${typeTag(lt)}</td>
         <td style="white-space:normal;max-width:340px">${i.status==="failed"?'<span class="tag red">Failed</span> ':""}${what}${i.applied_detail&&i.choice?`<div class="muted small">${esc(i.applied_detail)}</div>`:""}</td>
         <td>${pct(i.confidence)}</td><td class="small">${esc(who)}<div class="muted mono">${fmtTime(i.decided_at||i.applied_at||i.created_at)}</div></td>
-        <td class="small" style="white-space:normal;max-width:320px">${esc(i.reason||"")}</td>
+        <td class="small" style="white-space:normal;max-width:320px">${esc(lt.why)}</td>
         <td>${canFlag && i.status==="robot" && i.choice!=="wrong"?`<button class="b" data-w="${esc(i.id)}">Wrong — fix it</button>`:""}</td></tr>`; }).join("") ||
       `<tr><td colspan="7" class="muted">${esc(empty)}</td></tr>`;
     document.querySelectorAll("[data-w]").forEach(b=>b.onclick=()=>flagWrong(list.find(i=>i.id===b.dataset.w)));
