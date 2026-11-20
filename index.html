@@ -1084,6 +1084,7 @@ function wireCards(){
       const base = {status:"decided", decided_by:S.user.email, decided_at:now, updated_at:now, chosen:o, suggestion:o.label};
       const patch = o.action==="WAIT_COUNT" ? {...base, choice:"wait_count"}
         : o.action==="CREATED" ? {...base, choice:"created"}
+        : o.action==="KEEP" ? {...base, choice:"reject"}
         : o.action==="WRITE_IN" ? {...base, choice:"other", other_text:o.text}
         : {...base, choice:"approve", target:o.target||null, target_type:o.type||null, delta_oz:o.pour_oz??null};
       row.querySelectorAll("button").forEach(x=>x.disabled=true);
@@ -1092,6 +1093,7 @@ function wireCards(){
       if (!r.data?.length) toast("Someone already decided this one.");
       else toast(o.action==="WAIT_COUNT" ? "Parked until the count. The after-count pass maps it."
         : o.action==="CREATED" ? "Got it. The next pass maps it to the product you set up."
+        : o.action==="KEEP" ? "Kept as it is. The robot won't ask about it again."
         : o.action==="WRITE_IN" ? "Saved. Claude reads it on the next pass." : `Chosen: ${o.label}. The next pass writes it (or press "Write approved items to Pilot now").`);
       Object.assign(it, patch); loadMapping().catch(()=>{}).then(render);
     });
