@@ -680,8 +680,31 @@ async function loadNotes(){
 }
 const noteId = (c, kind, key) => `${c.cid}--${c.audit||"none"}--${kind}--${String(key).toLowerCase().replace(/[^a-z0-9]+/g,"-").slice(0,80)}`;
 function draftQuestion(i){
-  const why = lineTag(i.reason)[1].replace(/\s+/g," ").trim();
-  return `We saw "${i.title}" on the sales report. ${why} Can you tell us what goes in it (each spirit and how many ounces)?`;
+  /* Dave 11/20: this text goes to the CLIENT - the button and its price only, never the robot's reasoning */
+  const pm = (i.reason||"").match(/\$([\d,.]+) a sale/);
+  return `We saw "${i.title}" on the sales report${pm?` ($${pm[1]} each)`:""}. Can you tell us what goes in it: each spirit and how many ounces?`;
+}
+/* Dave 11/20: cards from the question library (tools/question_library.py) are "Label: text" lines - drawn as bullets
+   with the label in bold, so the same issue always reads the same */
+const isLib = r => /(^|\n)Issue: /.test(r||"");
+const libBullets = r => (r||"").split("\n").map(l=>{ const m = l.match(/^([A-Z][A-Za-z ]{1,18}): (.*)$/); return m ? [m[1], m[2]] : ["", l]; });
+function libCard(i){
+  const b = libBullets(i.reason);
+  const line = (b.find(x=>x[0]==="Line")||[,""])[1];
+  const mod = /^Modifier/.test(line), menu = /^Menu item/.test(line);
+  const tag = i.kind==="invoice" ? `<span class="tag">INVOICE</span> ` : mod ? `<span class="tag amber">MODIFIER</span> ` : menu ? `<span class="tag blue">MENU ITEM</span> ` : "";
+  const opts = Array.isArray(i.options) ? i.options : [];
+  const other = M.other===i.id;
+  return `<div class="row ${mod?"mod":menu?"menu":""}" data-id="${esc(i.id)}" style="flex-direction:column;gap:10px">
+    <p style="margin:0">${tag}<b>${esc(i.title)}</b></p>
+    <ul class="small" style="margin:0;padding-left:18px;white-space:normal">${b.map(([k,v])=>`<li>${k?`<b>${esc(k)}:</b> `:""}${esc(k==="Line"?v.replace(/^(Modifier|Menu item)(, )?/,"").replace(/^\s*·\s*/,""):v)}</li>`).join("")}</ul>
+    <div style="display:flex;flex-direction:column;gap:8px;align-items:stretch">
+      ${opts.map((o,k)=>`<button class="b ${k===0?"primary":""}" style="text-align:left" data-lib="${k}">${esc(o.label)}</button>`).join("")}
+    </div>
+    ${askBox(i)}
+    ${other?`<div><label>What should it be?</label><textarea id="ot" placeholder="e.g. Map to Tito's Vodka, 1.5 oz"></textarea>
+      <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-a="other-save">Save</button><button class="b" data-a="other-cancel">Cancel</button></div></div>`:""}
+  </div>`;
 }
 function notesText(){
   const live = (M.notes||[]).filter(n=>n.status!=="dropped");
@@ -933,7 +956,7 @@ function writeJob(cl, audit){
 }
 function writeNowBar(cl, c, it){
   if (!cl || !c.audit || c.audit==="all") return "";
-  const n = it.filter(i=>i.status==="decided" && i.choice!=="reject").length;
+  const n = it.filter(i=>i.status==="decided" && !["reject","wait_count","created"].includes(i.choice)).length;
   const job = writeJob(cl, c.audit);
   const last = S.jobs.filter(j=>j.client_id===cl.id && (j.detail||{}).kind==="apply" && j.audit_date===c.audit && ["done","failed"].includes(j.status))
     .sort((a,b)=>String(b.finished_at).localeCompare(String(a.finished_at)))[0];
@@ -1007,6 +1030,7 @@ function askBox(i){
       <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" data-a="ask-save">Add to the client questions</button><button class="b" data-a="ask-cancel">Cancel</button></div></div>` : "";
 }
 function cardHTML(i){
+  if (isLib(i.reason)) return libCard(i);
   const other = M.other===i.id;
   const side = /^Modifier — /.test(i.reason||"") ? "mod" : /^Menu item — /.test(i.reason||"") ? "menu" : "";
   // the client-question choice is now its own button (Ask the client), not an answer option
@@ -1051,6 +1075,26 @@ function cardHTML(i){
 function wireCards(){
   document.querySelectorAll("#mbody .row[data-id]").forEach(row=>{
     const id = row.dataset.id;
+    // library cards (Dave 11/20): each button does exactly what it says
+    row.querySelectorAll("[data-lib]").forEach(b=>b.onclick=async()=>{
+      const it = M.items.find(x=>x.id===id), o = (it.options||[])[+b.dataset.lib];
+      if (o.action==="ASK_CLIENT"){ M.ask=id; M.other=null; renderClientAudit(); $("#aq")?.focus(); return; }
+      if (o.action==="WRITE_IN" && !o.text){ M.other=id; M.ask=null; renderClientAudit(); $("#ot")?.focus(); return; }
+      const now = new Date().toISOString();
+      const base = {status:"decided", decided_by:S.user.email, decided_at:now, updated_at:now, chosen:o, suggestion:o.label};
+      const patch = o.action==="WAIT_COUNT" ? {...base, choice:"wait_count"}
+        : o.action==="CREATED" ? {...base, choice:"created"}
+        : o.action==="WRITE_IN" ? {...base, choice:"other", other_text:o.text}
+        : {...base, choice:"approve", target:o.target||null, target_type:o.type||null, delta_oz:o.pour_oz??null};
+      row.querySelectorAll("button").forEach(x=>x.disabled=true);
+      const r = await sb.from("mapping_items").update(patch).eq("id",id).eq("status","open").select("id");
+      if (r.error){ toast("Not saved: "+r.error.message); row.querySelectorAll("button").forEach(x=>x.disabled=false); return; }
+      if (!r.data?.length) toast("Someone already decided this one.");
+      else toast(o.action==="WAIT_COUNT" ? "Parked until the count. The after-count pass maps it."
+        : o.action==="CREATED" ? "Got it. The next pass maps it to the product you set up."
+        : o.action==="WRITE_IN" ? "Saved. Claude reads it on the next pass." : `Chosen: ${o.label}. The next pass writes it (or press "Write approved items to Pilot now").`);
+      Object.assign(it, patch); loadMapping().catch(()=>{}).then(render);
+    });
     row.querySelectorAll("[data-opt]").forEach(b=>b.onclick=async()=>{
       const it = M.items.find(x=>x.id===id), o = (it.options||[])[+b.dataset.opt];
       const now = new Date().toISOString();
@@ -1103,6 +1147,12 @@ function wireCards(){
 // the front of the reason ("Modifier — ...", "Menu item, $9.00 a sale — ...") moves here; "auto:" is dropped.
 function lineType(i){
   const r = i.reason||"";
+  if (isLib(r)){                                   // Dave 11/20 bullet cards: "Line: Menu item, $9.00 a sale · ..."
+    const b = libBullets(r), line = (b.find(x=>x[0]==="Line")||[,""])[1];
+    const lm = line.match(/^(Modifier|Menu item)(, \$[\d,.]+ a sale)?/);
+    const src = i.kind==="invoice" ? "Invoice" : lm ? (lm[1]==="Modifier" ? "MOD Mapping" : "PMIX Mapping") : "Mapping (source unknown)";
+    return {src, price: lm && lm[2] ? lm[2].slice(2) : "", why: b.filter(x=>x[0]!=="Line").map(x=>x[0]+": "+x[1]).join(" · ")};
+  }
   const m = r.match(/^(Modifier|Menu item)(, \$[\d,.]+ a sale)? — /);
   const src = i.kind==="invoice" ? "Invoice" : m ? (m[1]==="Modifier" ? "MOD Mapping" : "PMIX Mapping") : "Mapping (source unknown)";
   const why = (m ? r.slice(m[0].length) : r).replace(/^auto:\s*/, "").replace(/^Claude:\s*/, "");
