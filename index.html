@@ -1163,7 +1163,7 @@ function lineType(i){
 const typeTag = t => `<span class="tag ${t.src==="MOD Mapping"?"amber":t.src==="PMIX Mapping"?"blue":t.src==="Invoice"?"":"red"}">${esc(t.src)}</span>${t.price?`<div class="muted small">${esc(t.price)}</div>`:""}`;
 function mapTable(list, empty, canFlag){
   $("#mbody").innerHTML = `<div class="bar"><input id="mq" placeholder="Search button or product" value="${esc(M.q)}" style="max-width:280px"><span class="grow"></span><span class="muted small" id="mcount"></span></div>
-    <div class="tablewrap"><table><thead><tr><th>POS button</th><th>Type</th><th>What was done</th><th>Sure</th><th>Who / when</th><th>Why</th><th></th></tr></thead><tbody id="mrows"></tbody></table></div>`;
+    <div class="tablewrap"><table style="table-layout:auto;width:100%"><thead><tr><th style="width:16%">POS button</th><th style="width:7%">Type</th><th style="width:17%">What was done</th><th style="width:4%">Sure</th><th style="width:8%">Who / when</th><th style="width:42%">Why</th><th style="width:6%"></th></tr></thead><tbody id="mrows"></tbody></table></div>`;
   const draw = ()=>{
     const t = M.q.toLowerCase();
     const rows = list.filter(i=>!t || (i.title+" "+(i.suggestion||"")+" "+(i.target||"")).toLowerCase().includes(t));
@@ -1174,10 +1174,11 @@ function mapTable(list, empty, canFlag){
         i.choice==="wrong" ? `Flagged wrong → ${esc(i.other_text||"")}` : i.choice==="other" ? `Changed → ${esc(i.other_text||"")}` :
         i.choice==="reject" ? "Rejected" : i.choice==="noted" ? "Noted" : esc(i.suggestion||i.applied_detail||"");
       const lt = lineType(i);
-      return `<tr style="cursor:default"><td><b>${esc(i.title)}</b></td><td>${typeTag(lt)}</td>
-        <td style="white-space:normal;max-width:340px">${i.status==="failed"?'<span class="tag red">Failed</span> ':""}${what}${i.applied_detail&&i.choice?`<div class="muted small">${esc(i.applied_detail)}</div>`:""}</td>
+      // Dave 11/22: "I need 'Why' to have a lot of space. There are sentences there I need to read."
+      return `<tr style="cursor:default"><td style="white-space:normal;min-width:160px"><b>${esc(i.title)}</b></td><td>${typeTag(lt)}</td>
+        <td style="white-space:normal;min-width:170px">${i.status==="failed"?'<span class="tag red">Failed</span> ':""}${what}${i.applied_detail&&i.choice?`<div class="muted small">${esc(i.applied_detail)}</div>`:""}</td>
         <td>${pct(i.confidence)}</td><td class="small">${esc(who)}<div class="muted mono">${fmtTime(i.decided_at||i.applied_at||i.created_at)}</div></td>
-        <td class="small" style="white-space:normal;max-width:320px">${esc(lt.why)}</td>
+        <td class="small" style="white-space:normal;min-width:420px;line-height:1.45">${esc(lt.why)}</td>
         <td>${canFlag && i.status==="robot" && i.choice!=="wrong"?`<button class="b" data-w="${esc(i.id)}">Wrong — fix it</button>`:""}</td></tr>`; }).join("") ||
       `<tr><td colspan="7" class="muted">${esc(empty)}</td></tr>`;
     document.querySelectorAll("[data-w]").forEach(b=>b.onclick=()=>flagWrong(list.find(i=>i.id===b.dataset.w)));
