@@ -444,7 +444,7 @@ const DB_KEEP_MONTHS = 3;   // "Keep" is a snooze, not forever (Dave 11/11/2026)
 const keepUntil = ts => { const d = new Date(ts); d.setMonth(d.getMonth()+DB_KEEP_MONTHS); return d.toISOString().slice(0,10); };
 const DB_COLS = "id,client_id,venue,kind,recipe,last_sold,units_ever,buttons_mapped,last_counted,suggestion,reason,status,choice,decided_by,decided_at,applied_at,applied_detail,found_at";
 const DB_TABS = [["open","Waiting for a decision"],["decided","Approved — the robot deletes next"],["applied","Deleted"],["kept","Kept"]];
-const dbOpenTotal = () => D.sum.filter(r=>r.status==="open").reduce((a,r)=>a+r.n,0);
+const dbOpenTotal = () => D.sum.filter(r=>r.status==="open").reduce((a,r)=>a+r.n,0) + (D.clean||[]).filter(r=>r.status==="open").length;
 const dbTabOf = r => r.status==="open" ? "open" : r.status==="applied" ? "applied" : (r.choice==="keep"||r.choice==="reject") ? "kept" : r.status==="decided" ? "decided" : r.status==="failed" ? "decided" : null;
 
 async function loadDb(){
@@ -453,7 +453,11 @@ async function loadDb(){
   D.ready = true; D.sum = q.data;
   const r = await sb.from("db_review_runs").select("*").order("requested_at",{ascending:false}).limit(1);
   D.run = r.error ? null : (r.data[0] || null);
+  // cleanup review findings (tools/cleanup_review.py, Dave 11/22): mapping_items kind 'cleanup', no audit date
+  const cq = await sb.from("mapping_items").select("client_id,venue,status,choice").eq("kind","cleanup");
+  D.clean = cq.error ? [] : cq.data;
   if (D.client) await loadDbItems();
+  if (D.cclient) await loadCleanItems();
 }
 function runLine(){
   const r = D.run;
@@ -519,6 +523,7 @@ async function saveWindow(sel){
 function renderDb(){
   if (!D.ready){ $("#main").innerHTML = `<div class="msg info"><b>The Database Review isn't switched on in the database yet.</b> Run "STEP 7 - SUPABASE - database review" (Google Drive → My Drive → Barmetrix Automation) in the Supabase SQL Editor, then reload this page.</div>`; return; }
   if (D.client) return renderDbClient();
+  if (D.cclient) return renderCleanClient();
   const cards = dbCards();
   const busy = D.run && ["queued","running"].includes(D.run.status);
   $("#main").innerHTML = `
@@ -531,8 +536,11 @@ function renderDb(){
         <div class="small muted">Safe to delete after</div>
         <div onclick="event.stopPropagation()">${windowSelect(x.client)}</div>
         <div class="small muted">Last scan ${esc(fmtTime(x.last))}</div></div>`).join("")}</div>`
-      : `<p class="muted">Nothing found yet. Press "Run the database review now".</p>`}`;
+      : `<p class="muted">Nothing found yet. Press "Run the database review now".</p>`}${cleanSection()}`;
   $("#drun").onclick = e=>runDbReview(e.currentTarget);
+  document.querySelectorAll("[data-cl]").forEach(el=>el.onclick=async()=>{ const x = cleanCards()[+el.dataset.cl];
+    D.cclient = {cid:x.cid, venue:x.venue, name:x.name}; D.ctab = "open"; M.other = null; M.ask = null;
+    try { await loadCleanItems(); } catch(e){ toast("Could not load: "+(e.message||e)); } renderDb(); });
   document.querySelectorAll("[data-win]").forEach(s=>s.onchange=()=>saveWindow(s));
   document.querySelectorAll("[data-dc]").forEach(el=>el.onclick=async()=>{ const x = cards[+el.dataset.dc];
     D.client = {cid:x.cid, venue:x.venue, name:x.name}; D.tab="open"; D.sel = new Set(); D.q="";
@@ -574,6 +582,110 @@ function renderDbClient(){
     $("#dkeep").onclick = ()=>decideDb(rows.filter(r=>D.sel.has(r.id)), "keep");
   }
 }
+/* ---------- cleanup review (Dave 11/22: "we need to clean this database") ----------
+   tools/cleanup_review.py: the full Claude session reviews what a client SELLS - every sold button's mapping, sold
+   buttons on the trash list, every recipe they use - and each real problem becomes a card here (mapping_items kind
+   'cleanup', no audit date: it belongs to no audit day). Cards are question-library cards; approving one and pressing
+   "Write approved fixes to Pilot now" writes it (mapping re-map, or the recipe rows changed in place). */
+const CLEAN_TABS = [["open","Waiting for a decision"],["decided","Approved — not written yet"],["applied","Done"],["kept","Kept as it is"]];
+const cleanTabOf = r => r.status==="open" ? "open" : r.status==="applied" ? "applied" : r.choice==="reject" ? "kept" : r.status==="decided"||r.status==="failed" ? "decided" : null;
+function cleanCards(){
+  const cards = new Map();
+  (D.clean||[]).forEach(r=>{
+    const k = ckey(r.client_id, r.venue);
+    if (!cards.has(k)) cards.set(k, {cid:r.client_id, venue:r.venue, open:0, decided:0, applied:0, kept:0});
+    const t = cleanTabOf(r); if (t) cards.get(k)[t]++;
+  });
+  return [...cards.values()].map(x=>{ const c = x.cid && clientOf(x.cid); return Object.assign(x, {client:c, name:c?c.client_display_name:x.venue}); })
+    .sort((a,b)=> b.open-a.open || a.name.localeCompare(b.name));
+}
+function cleanSection(){
+  const cards = cleanCards();
+  return `<div class="banner blue" style="margin-top:22px"><b>Cleanup review</b>Wrong mappings and recipes found in what each client actually sells: cocktails mapped to a bare spirit, wrong brands, bottle/glass mix-ups, pours that don't match the venue's own, recipes with the wrong spirit or impossible amounts. Nothing changes in Pilot until a fix is approved and written.</div>
+    ${cards.length ? `<div class="ccards">${cards.map((x,i)=>`<div class="ccard" data-cl="${i}" role="button" tabindex="0"><b>${esc(x.name)}</b>
+      <div class="chips">${x.open?`<span class="tag amber">${x.open} waiting</span>`:""}${x.decided?`<span class="tag blue">${x.decided} approved</span>`:""}${x.applied?`<span class="tag green">${x.applied} done</span>`:""}${x.kept?`<span class="tag">${x.kept} kept</span>`:""}</div></div>`).join("")}</div>`
+      : `<p class="muted">No cleanup review has been run yet.</p>`}`;
+}
+async function loadCleanItems(){
+  const c = D.cclient;
+  const r = await sb.from("mapping_items").select(ITEM_COLS + ",options,chosen").eq("kind","cleanup").eq("client_id", c.cid).order("title");
+  if (r.error) throw r.error;
+  M.items = r.data;                                   // libCard / askBox read M
+}
+function cleanJob(cid){
+  return S.jobs.find(j=>j.client_id===cid && (j.detail||{}).cleanup && ["queued","running"].includes(j.status));
+}
+function renderCleanClient(){
+  const c = D.cclient, cl = clientOf(c.cid), items = M.items||[];
+  const counts = Object.fromEntries(CLEAN_TABS.map(([k])=>[k, items.filter(r=>cleanTabOf(r)===k).length]));
+  const inTab = items.filter(r=>cleanTabOf(r)===D.ctab);
+  const toWrite = items.filter(r=>r.status==="decided" && !["reject","wait_count","created"].includes(r.choice)).length;
+  const job = cleanJob(c.cid);
+  const last = S.jobs.filter(j=>j.client_id===c.cid && (j.detail||{}).cleanup && ["done","failed"].includes(j.status))
+    .sort((a,b)=>String(b.finished_at).localeCompare(String(a.finished_at)))[0];
+  $("#main").innerHTML = `
+    <div class="bar"><button class="b" id="cback">← All clients</button><h2 style="margin:0 8px;font-size:18px">${esc(c.name)} — cleanup review</h2></div>
+    ${job ? `<div class="banner blue"><b>Writing fixes to Pilot on ${esc(job.machine||"")}…</b>${job.status==="queued"?"Waiting for that computer (under a minute when it's on).":"Running now."}</div>`
+      : toWrite ? `<div class="bar"><button class="b primary" id="cwrite">Write ${toWrite} approved fix${toWrite>1?"es":""} to Pilot now</button>
+          <span class="muted small">Recipe changes also change past reports (Pilot rebuilds them from today's recipes).</span></div>` : ""}
+    ${last?`<div class="muted small" style="margin:0 0 10px">Last write: ${esc(fmtTime(last.finished_at))} — ${esc(last.summary||last.status)}</div>`:""}
+    <div class="tabs" style="padding:0;margin:0 0 14px">${CLEAN_TABS.map(([k,l])=>`<button data-ct="${k}" class="${D.ctab===k?"on":""}">${l} (${counts[k]})</button>`).join("")}</div>
+    <div id="mbody"></div>`;
+  $("#cback").onclick = async()=>{ D.cclient = null; M.items = []; await loadDb().catch(()=>{}); renderDb(); };
+  document.querySelectorAll("[data-ct]").forEach(b=>b.onclick=()=>{ D.ctab = b.dataset.ct; renderCleanClient(); });
+  const w = $("#cwrite"); if (w) w.onclick = async()=>{
+    if (!cl || !cl.map_machine){ toast("This client has no mapping computer yet (Clients tab → client → Mapping)."); return; }
+    w.disabled = true;
+    const r = await sb.from("map_jobs").insert({client_id:cl.id, machine:cl.map_machine, pass:"manual", requested_by:S.user.email,
+      audit_date:null, detail:{kind:"apply", cleanup:true}}).select("id");
+    if (r.error){ toast("Not started: "+r.error.message); w.disabled = false; return; }
+    toast(`Sent to ${cl.map_machine}. This page updates as fixes are written.`);
+    await refresh(true); renderCleanClient();
+    const t0 = Date.now();
+    const tick = setInterval(async()=>{ await refresh(true); if (D.cclient){ await loadCleanItems().catch(()=>{}); renderCleanClient(); }
+      if (!cleanJob(c.cid) || Date.now()-t0 > 30*60e3) clearInterval(tick); }, 15000);
+  };
+  if (D.ctab==="open"){
+    $("#mbody").innerHTML = inTab.length ? `<div class="actions qlist">${inTab.map(libCard).join("")}</div>` : `<p class="muted">Nothing waiting.</p>`;
+    wireClean();
+  } else mapTable(inTab, "Nothing here.");
+}
+function wireClean(){
+  document.querySelectorAll("#mbody .row[data-id]").forEach(row=>{
+    const id = row.dataset.id, it = M.items.find(x=>x.id===id);
+    const save = async (patch, msg)=>{
+      const now = new Date().toISOString();
+      row.querySelectorAll("button").forEach(x=>x.disabled=true);
+      const r = await sb.from("mapping_items").update(Object.assign({decided_by:S.user.email, decided_at:now, updated_at:now}, patch)).eq("id",id).eq("status","open").select("id");
+      if (r.error){ toast("Not saved: "+r.error.message); row.querySelectorAll("button").forEach(x=>x.disabled=false); return; }
+      toast(r.data?.length ? msg : "Someone already decided this one.");
+      M.other = null; M.ask = null;
+      await loadCleanItems().catch(()=>{}); await loadDb().catch(()=>{}); renderCleanClient();
+    };
+    row.querySelectorAll("[data-lib]").forEach(b=>b.onclick=()=>{
+      const o = (it.options||[])[+b.dataset.lib];
+      if (o.action==="ASK_CLIENT"){ M.ask=id; M.other=null; renderCleanClient(); $("#aq")?.focus(); return; }
+      if (o.action==="WRITE_IN" && !o.text){ M.other=id; M.ask=null; renderCleanClient(); $("#ot")?.focus(); return; }
+      if (o.action==="KEEP") return save({status:"decided", choice:"reject", chosen:o, suggestion:o.label}, "Kept as it is.");
+      if (o.action==="WRITE_IN") return save({status:"decided", choice:"other", other_text:o.text, chosen:o, suggestion:o.label}, "Saved.");
+      save({status:"decided", choice:"approve", chosen:o, suggestion:o.label, target:o.target||null, target_type:o.type||null, delta_oz:o.pour_oz??null},
+           `Approved: ${o.label}. Press "Write approved fixes to Pilot now" when you're ready.`);
+    });
+    row.querySelectorAll("[data-a]").forEach(b=>b.onclick=async e=>{
+      e.preventDefault();
+      const a = b.dataset.a;
+      if (a==="other-cancel" || a==="ask-cancel"){ M.other=null; M.ask=null; renderCleanClient(); return; }
+      if (a==="other-save"){ const t = ($("#ot").value||"").trim(); if (!t){ toast("Write what it should be first."); return; }
+        return save({status:"decided", choice:"other", other_text:t}, "Saved. Claude reads it before anything is written."); }
+      if (a==="ask-save"){ const t = ($("#aq").value||"").trim(); if (!t){ toast("Write the question first."); return; }
+        const now = new Date().toISOString();
+        const n = await sb.from("client_notes").upsert({id:`${it.client_id}--cleanup--question--${id}`.slice(0,200), client_id:it.client_id, venue:it.venue,
+          audit_date:null, kind:"question", text:t, item_id:id, created_by:S.user.email, updated_at:now});
+        if (n.error){ toast("Question not saved: "+n.error.message); return; }
+        return save({status:"applied", choice:"ask_client", applied_at:now, applied_detail:"On the client question list: "+t}, "Added to the client questions."); }
+    });
+  });
+}
 async function decideDb(list, choice){
   if (!list.length) return;
   const now = new Date().toISOString(), ids = list.map(r=>r.id);
@@ -605,7 +717,7 @@ const ITEM_COLS = "id,venue,client_id,audit_date,kind,title,suggestion,reason,ta
 const ckey = (cid,venue) => cid ? "c:"+cid : "v:"+venue;
 const clientOf = cid => S.clients.find(c=>c.id===cid);
 const isWaiting = r => r.status==="decided" || (r.flagged && (r.status==="robot"||r.status==="applied"));
-const openTotal = () => M.sum.filter(r=>r.status==="open").reduce((a,r)=>a+r.n,0);
+const openTotal = () => M.sum.filter(r=>r.status==="open" && r.audit_date).reduce((a,r)=>a+r.n,0);
 
 async function loadMapping(){
   const end = addDays(M.weekStart,6);
@@ -805,7 +917,8 @@ function renderMapping(){
   if (M.client) return renderClientAudit();
   const today = todayISO(), days = [...Array(7)].map((_,i)=>addDays(M.weekStart,i));
   const earlier = new Map();
-  M.sum.filter(r=>(r.status==="open"||r.status==="failed"||isWaiting(r)) && (!r.audit_date || r.audit_date < M.weekStart)).forEach(r=>{
+  // items with no audit date are the Database Review tab's cleanup findings (Dave 11/22) - never an "earlier audit"
+  M.sum.filter(r=>(r.status==="open"||r.status==="failed"||isWaiting(r)) && r.audit_date && r.audit_date < M.weekStart).forEach(r=>{
     const k = ckey(r.client_id,r.venue)+"|"+r.audit_date;
     if (!earlier.has(k)) earlier.set(k, {cid:r.client_id, venue:r.venue, audit:r.audit_date, rows:[]});
     earlier.get(k).rows.push(r);
