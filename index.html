@@ -764,6 +764,7 @@ async function loadClientItems(){
     // options/chosen arrive with STEP 9; until then the tab works without the choice buttons
     let q = sb.from("mapping_items").select(ITEM_COLS + (M.hasOpts ? ",options,chosen" : ""));
     q = c.cid ? q.eq("client_id",c.cid) : q.eq("venue",c.venue).is("client_id",null);
+    q = q.neq("kind","cleanup");      // Dave 11/23: database cleanup lives on the Database Review tab, never in Mapping
     if (c.audit!=="all") q = c.audit ? q.eq("audit_date",c.audit) : q.is("audit_date",null);
     const r = await q.order("kind").order("title").range(from, from+999);
     if (r.error && M.hasOpts && /options|chosen/i.test(r.error.message)){ M.hasOpts = false; return loadClientItems(); }
@@ -798,18 +799,28 @@ function draftQuestion(i){
 }
 /* Dave 11/20: cards from the question library (tools/question_library.py) are "Label: text" lines - drawn as bullets
    with the label in bold, so the same issue always reads the same */
-const isLib = r => /(^|\n)Issue: /.test(r||"");
+/* Dave 11/23: "This needs to be understandable at a glance" - the Problem line leads (bold, larger), the price moves
+   into the header next to the MENU ITEM / MODIFIER tag, the wrong ingredient (**x**) is highlighted, and the old
+   "Next:" line is never shown */
+const isLib = r => /(^|\n)(Issue|Problem): /.test(r||"");
+const LINE_LABELS = ["Line","POS button","Invoice line"];
 const libBullets = r => (r||"").split("\n").map(l=>{ const m = l.match(/^([A-Z][A-Za-z ]{1,18}): (.*)$/); return m ? [m[1], m[2]] : ["", l]; });
+const libMark = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<mark style="background:#fde2e1;color:#9b1c1c;padding:0 3px;border-radius:3px;font-weight:600">$1</mark>');
 function libCard(i){
-  const b = libBullets(i.reason);
-  const line = (b.find(x=>x[0]==="Line")||[,""])[1];
+  const all = libBullets(i.reason).filter(([k])=>k!=="Next");
+  const line = (all.find(x=>LINE_LABELS.includes(x[0]))||[,""])[1];
   const mod = /^Modifier/.test(line), menu = /^Menu item/.test(line);
+  const price = (line.match(/\$[\d,.]+ a sale/)||[""])[0];
   const tag = i.kind==="invoice" ? `<span class="tag">INVOICE</span> ` : mod ? `<span class="tag amber">MODIFIER</span> ` : menu ? `<span class="tag blue">MENU ITEM</span> ` : "";
+  const prob = all.find(x=>x[0]==="Problem"||x[0]==="Issue");
+  const b = all.filter(x=>x!==prob).map(([k,v])=>[k, LINE_LABELS.includes(k) ? v.replace(/^(Modifier|Menu item)(, \$[\d,.]+ a sale)?/,"").replace(/^\s*·\s*/,"") : v])
+               .filter(([k,v])=>!(LINE_LABELS.includes(k) && !v.trim()));
   const opts = Array.isArray(i.options) ? i.options : [];
   const other = M.other===i.id;
   return `<div class="row ${mod?"mod":menu?"menu":""}" data-id="${esc(i.id)}" style="flex-direction:column;gap:10px">
-    <p style="margin:0">${tag}<b>${esc(i.title)}</b></p>
-    <ul class="small" style="margin:0;padding-left:18px;white-space:normal">${b.map(([k,v])=>`<li>${k?`<b>${esc(k)}:</b> `:""}${esc(k==="Line"?v.replace(/^(Modifier|Menu item)(, )?/,"").replace(/^\s*·\s*/,""):v)}</li>`).join("")}</ul>
+    <p style="margin:0">${tag}<b>${esc(i.title)}</b>${price?` <span class="muted small">· ${esc(price)}</span>`:""}</p>
+    ${prob?`<p style="margin:0;font-weight:700;color:#9b1c1c">${esc(prob[1])}</p>`:""}
+    <ul class="small" style="margin:0;padding-left:18px;white-space:normal">${b.map(([k,v])=>`<li>${k?`<b>${esc(k)}:</b> `:""}${libMark(v)}</li>`).join("")}</ul>
     <div style="display:flex;flex-direction:column;gap:8px;align-items:stretch">
       ${opts.map((o,k)=>`<button class="b ${k===0?"primary":""}" style="text-align:left" data-lib="${k}">${esc(o.label)}</button>`).join("")}
     </div>
@@ -1263,10 +1274,10 @@ function wireCards(){
 function lineType(i){
   const r = i.reason||"";
   if (isLib(r)){                                   // Dave 11/20 bullet cards: "Line: Menu item, $9.00 a sale · ..."
-    const b = libBullets(r), line = (b.find(x=>x[0]==="Line")||[,""])[1];
+    const b = libBullets(r), line = (b.find(x=>LINE_LABELS.includes(x[0]))||[,""])[1];
     const lm = line.match(/^(Modifier|Menu item)(, \$[\d,.]+ a sale)?/);
     const src = i.kind==="invoice" ? "Invoice" : lm ? (lm[1]==="Modifier" ? "MOD Mapping" : "PMIX Mapping") : "Mapping (source unknown)";
-    return {src, price: lm && lm[2] ? lm[2].slice(2) : "", why: b.filter(x=>x[0]!=="Line").map(x=>x[0]+": "+x[1]).join(" · ")};
+    return {src, price: lm && lm[2] ? lm[2].slice(2) : "", why: b.filter(x=>!LINE_LABELS.includes(x[0])).map(x=>x[0]+": "+x[1].replace(/\*\*/g,"")).join(" · ")};
   }
   const m = r.match(/^(Modifier|Menu item)(, \$[\d,.]+ a sale)? — /);
   const src = i.kind==="invoice" ? "Invoice" : m ? (m[1]==="Modifier" ? "MOD Mapping" : "PMIX Mapping") : "Mapping (source unknown)";
