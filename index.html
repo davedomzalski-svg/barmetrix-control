@@ -300,15 +300,13 @@ function openMachines(){
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;width:100%"><b style="font-size:16px">${esc(m.name)}</b>
           <span class="tag ${fresh?"green":"red"}">${fresh?"Online":"Offline"} · ${esc(ago(m.last_checkin))}</span>
           <span class="tag">${m.pilot_running?"Pilot open":"Pilot closed"}</span><span class="grow"></span>
-          <select data-mk="${esc(m.name)}" style="max-width:190px"><option value="audit" ${m.kind==="audit"?"selected":""}>Audit machine</option><option value="desk" ${m.kind==="desk"?"selected":""}>Desk machine (never maps)</option></select></div>
+          <span class="tag" title="Change it on the Computers tab">${m.kind==="audit"?"Audit machine":"Desk machine (never maps)"}</span></div>
         <div class="small">${(m.clients_held||[]).map(h=>{ const c = S.clients.find(x=>normName(x.pilot_name)===normName(h.name));
           return `<div>${esc(h.name)}${c?` → <b>${esc(c.client_display_name)}</b>`:' <span class="tag red">not linked to a client</span>'} <span class="muted">· last sync ${h.last_sync?esc(fmtTime(h.last_sync)):"—"}</span></div>`; }).join("") || '<span class="muted">Holds no clients.</span>'}</div>
       </div></div>`; }).join("") : `<p class="muted">No machine has checked in yet.</p>`}
       <p class="hint">A client's Pilot name is linked automatically when it matches the client's name. If one shows "not linked", open that client on the Clients tab → Mapping and type its Pilot name.</p></div>
     <div class="ft"><span class="grow"></span><button class="b big" id="mc">Close</button></div></div>`;
     ov.querySelector("#mc").onclick = ()=>ov.remove();
-    ov.querySelectorAll("[data-mk]").forEach(s=>s.onchange=async()=>{ const r = await sb.from("machines").update({kind:s.value}).eq("name",s.dataset.mk).select("name");
-      if (r.error||!r.data?.length){ toast("Not saved: "+(r.error?.message||"no row")); return; } S.machines.find(x=>x.name===s.dataset.mk).kind = s.value; toast("Saved."); });
   };
   draw(); document.body.appendChild(ov);
   ov.addEventListener("mousedown", e=>{ if(e.target===ov) ov.remove(); });
@@ -406,14 +404,28 @@ function render(){
    mapping and one button per computer, each saying whether that computer's Pilot holds the client and how fresh. */
 const CM = {q:""};
 const shortName = n => String(n||"").replace(/^MIAMI-/,"");
-const syncOf = (m, c) => (m.clients_held||[]).find(h=>normName(h.name)===normName(c.pilot_name||c.client_display_name));
+/* Logins that aren't one-to-one with Pilot clients (Dave 11/24: "That is 2 clients, not one"). Same pairs as
+   context/client_links.json on the robot - keep the two in step.
+   PILOT_CLIENTS_OF: one Command Center row (one Toast login, one pull) = several Pilot clients, mapped together.
+   POS_LOGIN_OF: a pull-only login whose sales go into ANOTHER client's Pilot client. */
+const PILOT_CLIENTS_OF = {"Coasnostra & El Cuban Diner": ["Cosanostra", "El Cuban Diner"]};
+const POS_LOGIN_OF = {"The Naked Tomato": "Moxy Hotel"};
+const pilotsOf = c => PILOT_CLIENTS_OF[c.client_display_name] || [c.pilot_name||c.client_display_name];
+const partOf = c => POS_LOGIN_OF[c.client_display_name]
+  || (!c.pilot_name && Object.entries(PILOT_CLIENTS_OF).find(([k,v])=>k!==c.client_display_name && v.some(p=>normName(p)===normName(c.client_display_name)))?.[0])
+  || null;
+const syncOf = (m, name) => (m.clients_held||[]).find(h=>normName(h.name)===normName(name));
 const daysAgo = ts => ts ? Math.floor((Date.now()-new Date(ts))/864e5) : null;
 function holdNote(m, c){
-  const h = syncOf(m, c);
-  if (!h) return {cls:"red", txt:"not in its Pilot"};
-  const d = daysAgo(h.last_sync);
-  const when = h.last_sync ? new Date(h.last_sync).toLocaleDateString("en-US",{month:"short",day:"numeric"}) : "never";
-  return d!=null && d>14 ? {cls:"amber", txt:`synced ${when} — sync it first`} : {cls:"green", txt:`holds it · synced ${when}`};
+  // every Pilot client behind this row must be in that computer's Pilot; show the worst one
+  const notes = pilotsOf(c).map(p=>{
+    const h = syncOf(m, p), who = pilotsOf(c).length>1 ? `${p}: ` : "";
+    if (!h) return {cls:"red", rank:0, txt:`${who}not in its Pilot`};
+    const d = daysAgo(h.last_sync);
+    const when = h.last_sync ? new Date(h.last_sync).toLocaleDateString("en-US",{month:"short",day:"numeric"}) : "never";
+    return d!=null && d>14 ? {cls:"amber", rank:1, txt:`${who}synced ${when} — sync it first`} : {cls:"green", rank:2, txt:`holds it · synced ${when}`};
+  });
+  return notes.sort((a,b)=>a.rank-b.rank)[0];
 }
 function renderComputers(){
   if (!S.hasMapCols){ $("#main").innerHTML = `<div class="msg info">Mapping isn't switched on in the database yet.</div>`; return; }
@@ -422,24 +434,32 @@ function renderComputers(){
   const live = S.clients.filter(c=>c.status==="active");
   const t = CM.q.toLowerCase();
   const rows = live.filter(c=>!t || c.client_display_name.toLowerCase().includes(t))
-    .sort((a,b)=>String(a.next_due_date||"9999").localeCompare(String(b.next_due_date||"9999")) || a.client_display_name.localeCompare(b.client_display_name));
+    .sort((a,b)=>a.client_display_name.localeCompare(b.client_display_name, "en", {sensitivity:"base"}));   // Dave 11/24: A to Z
   const card = m => {
     const on = Date.now()-new Date(m.last_checkin) <= MACHINE_FRESH;
     const ver = (/robot (?:source \(published )?([\d.-]+)/.exec(m.agent_version||"")||[])[1] || "—";
-    const n = live.filter(c=>c.map_enabled && c.map_machine===m.name).length;
-    const nt = live.filter(c=>c.map_enabled && c.map_machine===m.name && c.next_due_date===tom).length;
-    return `<div class="card" style="flex:1;min-width:220px">
-      <div style="display:flex;align-items:center;gap:8px"><b style="font-size:16px">${esc(shortName(m.name))}</b>
-        <span class="tag ${on?"green":"red"}">${on?"On":"Off — not checking in"}</span></div>
+    // Dave 11/24: count every client set to this computer, not only the ones with the robot switched on
+    // counted in PILOT clients: the Cosanostra/El Cuban Diner row is 2 (Dave 11/24)
+    const mine = live.filter(c=>c.map_machine===m.name && !partOf(c));
+    const np = list => list.reduce((s,c)=>s+pilotsOf(c).length, 0);
+    const n = np(mine), non = np(mine.filter(c=>c.map_enabled));
+    const nt = np(mine.filter(c=>c.map_enabled && c.next_due_date===tom));
+    // Dave 11/24: the Audit/Desk choice lives HERE (it used to hide in Mapping > Machines)
+    const claude = /reasoning yes/.test(m.agent_version||"") ? `<span class="tag green">Claude ready</span>`
+      : /reasoning FAILS/.test(m.agent_version||"") ? `<span class="tag red" title="${esc((/reasoning FAILS - (.*)$/.exec(m.agent_version)||[])[1]||"")}">Claude not answering</span>` : "";
+    return `<div class="card" style="flex:1;min-width:240px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:16px">${esc(shortName(m.name))}</b>
+        <span class="tag ${on?"green":"red"}">${on?"On":"Off — not checking in"}</span>${claude}</div>
       <div class="small muted" style="margin-top:6px">Last seen ${esc(ago(m.last_checkin))} · Pilot ${m.pilot_running===true||String(m.pilot_running)==="True"?"open":"closed"} · robot ${esc(ver)}</div>
-      <div style="margin-top:6px"><b>${n}</b> client${n===1?"":"s"} to map${nt?` · <b>${nt}</b> tomorrow`:""}</div></div>`;
+      <select data-mk="${esc(m.name)}" style="margin-top:8px;max-width:230px"><option value="audit" ${m.kind==="audit"?"selected":""}>Audit machine (maps clients)</option><option value="desk" ${m.kind!=="audit"?"selected":""}>Desk machine (never maps)</option></select>
+      <div style="margin-top:6px"><b>${n}</b> client${n===1?"":"s"} · robot on for <b>${non}</b>${nt?` · <b>${nt}</b> tomorrow`:""}</div></div>`;
   };
-  let lastGroup = null;
-  const group = c => c.next_due_date===tom ? `Tomorrow — ${fmtLong(tom)}` : !c.next_due_date ? "No audit date" : c.next_due_date < tom ? "Today or overdue" : "Later";
   const row = c => {
-    const g = group(c);
-    const head = g!==lastGroup ? `<tr><td colspan="4" style="background:var(--grey-bg);font-weight:600">${esc(g)}</td></tr>` : "";
-    lastGroup = g;
+    const head = "";
+    const parent = partOf(c);
+    if (parent) return `<tr style="cursor:default"><td><b>${esc(c.client_display_name)}</b></td>
+      <td class="mono small">${c.next_due_date?esc(fmtDate(c.next_due_date)):"—"}</td>
+      <td colspan="2" class="muted">Mapped through the <b>${esc(parent)}</b> row (shared login) — set its computer there</td></tr>`;
     const btns = ms.map(m=>{
       const sel = c.map_machine===m.name, n = holdNote(m, c);
       return `<button class="b sm ${sel?"primary":""}" data-pick="${esc(m.name)}" data-c="${esc(c.id)}" style="display:flex;flex-direction:column;align-items:flex-start;min-width:150px;padding:6px 10px">
@@ -447,8 +467,12 @@ function renderComputers(){
     const chosen = ms.find(m=>m.name===c.map_machine), note = chosen && holdNote(chosen, c);
     const warn = !c.map_enabled ? "" : !c.map_machine ? `<span class="tag red">Pick a computer</span>`
       : !chosen ? `<span class="tag red">${esc(shortName(c.map_machine))} isn't a robot computer any more — pick one</span>`
+      : chosen.kind!=="audit" ? `<span class="tag red">${esc(shortName(chosen.name))} is a desk machine — it won't map until it's set to Audit machine above</span>`
       : note && note.cls!=="green" ? `<span class="tag ${note.cls}">${esc(shortName(chosen.name))}: ${esc(note.txt)}</span>` : `<span class="tag green">Ready</span>`;
-    return `${head}<tr style="cursor:default"><td><b>${esc(c.client_display_name)}</b>${c.pilot_name&&normName(c.pilot_name)!==normName(c.client_display_name)?`<div class="small muted">Pilot: ${esc(c.pilot_name)}</div>`:""}</td>
+    const ps = pilotsOf(c);
+    const sub = ps.length>1 ? `<div class="small"><b>${ps.length} Pilot clients:</b> ${esc(ps.join(" + "))}</div><div class="small muted">One Toast login. Both are mapped on the computer you pick.</div>`
+      : c.pilot_name&&normName(c.pilot_name)!==normName(c.client_display_name) ? `<div class="small muted">Pilot: ${esc(c.pilot_name)}</div>` : "";
+    return `${head}<tr style="cursor:default"><td><b>${esc(c.client_display_name)}</b>${sub}</td>
       <td class="mono small">${c.next_due_date?esc(fmtDate(c.next_due_date)):"—"}</td>
       <td><button class="sw ${c.map_enabled?"on":""}" data-tog="${esc(c.id)}"><i></i>${c.map_enabled?"Robot maps it":"Off"}</button></td>
       <td><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${btns}${warn}</div></td></tr>`;
@@ -478,6 +502,13 @@ function renderComputers(){
     if (r.error || !r.data?.length){ toast("Not saved: "+(r.error?.message||"no row")); b.disabled=false; return; }
     c.map_enabled = on;
     toast(`${c.client_display_name}: robot mapping ${on?"on":"off"}.`); renderComputers();
+  });
+  document.querySelectorAll("[data-mk]").forEach(s=>s.onchange=async()=>{
+    s.disabled = true;
+    const r = await sb.from("machines").update({kind:s.value}).eq("name",s.dataset.mk).select("name");
+    if (r.error||!r.data?.length){ toast("Not saved: "+(r.error?.message||"no row")); renderComputers(); return; }
+    S.machines.find(x=>x.name===s.dataset.mk).kind = s.value;
+    toast(`${shortName(s.dataset.mk)} is now ${s.value==="audit"?"an audit machine: it maps the clients picked for it":"a desk machine: it never maps"}.`); renderComputers();
   });
 }
 
