@@ -120,6 +120,45 @@ label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;font-wei
 .ccard:hover{border-color:var(--accent)}
 .ccard b{font-size:15px}
 .chips{display:flex;gap:6px;flex-wrap:wrap}
+/* Dave 11/24: one tight top bar - the email + Sign out sit in the menu row, never on a line of their own */
+header{flex-wrap:nowrap;padding-top:8px;padding-bottom:8px}
+header h1{white-space:nowrap}
+nav{overflow-x:auto;min-width:0;flex:1}
+nav button{white-space:nowrap}
+.who{flex-shrink:0}
+.who span{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.who .b{padding:5px 10px}
+@media (max-width:1400px){.who span{display:none}}
+@media (max-width:700px){header{flex-wrap:wrap}nav{flex-basis:100%;order:3}}
+/* Dave 11/24: on one client's audit, the client, the back button, the open-questions bar and the tabs stay frozen */
+.chead{position:sticky;top:var(--hdr,52px);z-index:4;background:var(--bg);margin:-16px calc(-1*max(16px,env(safe-area-inset-left))) 14px;
+  padding:10px max(16px,env(safe-area-inset-left)) 0;border-bottom:1px solid var(--line);box-shadow:0 2px 4px rgba(0,0,0,.04)}
+.chead .row1{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.chead h2{margin:0;font-size:22px}
+.chead .banner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 4px;padding:8px 12px}
+.chead .banner b{display:inline;margin:0;font-size:15px}
+.chead .banner .grow{flex:1}
+.chead .tabs{padding:0;margin:0;border-bottom:0}
+/* Dave 11/24: the day's audits read like a dashboard - every card has the same rows in the same places */
+.ccard.dash{gap:0;padding:14px 16px}
+.ccards:has(.dash){grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+.dash .ch{display:flex;align-items:baseline;gap:8px;width:100%}
+.dash .ch b{font-size:16px;flex:1;min-width:0}
+.dash .mach{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.03em;white-space:nowrap}
+.dash .pos{margin-bottom:10px}
+.dash .big{font-size:20px;font-weight:600;line-height:1.2;margin-bottom:2px}
+.dash .big.red{color:var(--red)} .dash .big.green{color:var(--green)} .dash .big.grey{color:var(--muted);font-size:16px;font-weight:500}
+.dash .sec{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600;margin:12px 0 5px;width:100%;border-top:1px solid var(--line);padding-top:8px}
+.dash .steps{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:13px}
+.dash .steps span{white-space:nowrap}
+.dash .steps .ok{color:var(--green);font-weight:500} .dash .steps .no{color:var(--muted)}
+.dash .pass{font-size:13px;font-weight:500}
+.dash .pass.red{color:var(--red)} .dash .pass.green{color:var(--green)} .dash .pass.blue{color:var(--blue)} .dash .pass.amber{color:var(--amber)} .dash .pass.grey{color:var(--muted);font-weight:400}
+.dash .dgrid{display:grid;grid-template-columns:1fr auto;gap:3px 12px;width:100%;font-size:13px}
+.dash .dgrid .sub{padding-left:14px;color:var(--muted)}
+.dash .dgrid .v{text-align:right;font-family:var(--mono);font-weight:600;min-width:2ch}
+.dash .dgrid .v.red{color:var(--red)} .dash .dgrid .v.amber{color:var(--amber)} .dash .dgrid .v.blue{color:var(--blue)} .dash .dgrid .v.green{color:var(--green)}
+.dash .act{margin-top:auto;padding-top:12px;display:flex;gap:8px;flex-wrap:wrap;width:100%}
 @media (max-width:900px){.days{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media (max-width:640px){.grid{grid-template-columns:1fr}.days{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
@@ -151,6 +190,7 @@ const todayISO = () => { const d = new Date(); return new Date(d.getTime()-d.get
 const addDays = (iso,n) => { const d = new Date(iso+"T12:00:00"); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
 const fmtDate = iso => { if(!iso) return "—"; const d = new Date(String(iso).slice(0,10)+"T12:00:00"); return d.toLocaleDateString("en-US",{weekday:"short",month:"2-digit",day:"2-digit",year:"numeric"}); };
 const fmtLong = iso => { if(!iso) return "—"; const d = new Date(String(iso).slice(0,10)+"T12:00:00"); return d.toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"}); };
+const fmtShort = iso => { if(!iso) return "—"; const d = new Date(String(iso).slice(0,10)+"T12:00:00"); return d.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"}); };
 const fmtTime = ts => ts ? new Date(ts).toLocaleString("en-US",{weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "—";
 const cycleDays = (c,custom) => ({weekly:7,biweekly:14,"4-week":28}[c] || (c==="custom" ? parseInt(custom)||0 : 0));
 
@@ -347,8 +387,12 @@ function render(){
   const v = S.view;
   $("#app").innerHTML = `<header><h1>Barmetrix Command Center</h1>
     <nav>${[["clients","Clients"],["computers","Computers"],["mapping",`Mapping${openTotal()?` <span class="tag amber">${openTotal()}</span>`:""}`],["dbreview",`Database review${dbOpenTotal()?` <span class="tag amber">${dbOpenTotal()}</span>`:""}`],["queue","Run queue"],["history","Pull history"],["changes",`Changes${chNew()&&chSeen()?` <span class="tag blue">${chNew()}</span>`:""}`]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
-    <div class="who"><span>${esc(S.user.email)}</span><button class="b" id="out">Sign out</button></div></header>
+    <div class="who"><span>${esc(S.user.email)}</span><button class="b" id="out" title="Signed in as ${esc(S.user.email)}">Sign out</button></div></header>
     <main id="main"></main>`;
+  // the frozen client bar sits right under the top bar, whatever height the top bar is
+  const hd = document.querySelector("header");
+  const setH = ()=>document.documentElement.style.setProperty("--hdr", hd.offsetHeight+"px");
+  setH(); if (window.ResizeObserver) new ResizeObserver(setH).observe(hd);
   document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); if(S.view==="mapping") await loadMapping().catch(e=>toast(e.message)); if(S.view==="dbreview") await loadDb().catch(e=>toast(e.message)); if(S.view==="changes") await loadChanges().catch(e=>toast(e.message)); render(); });
   $("#out").onclick = ()=>sb.auth.signOut();
   if (v==="clients") renderClients(); else if (v==="computers") renderComputers(); else if (v==="mapping") renderMapping(); else if (v==="dbreview") renderDb(); else if (v==="queue") renderQueue(); else if (v==="changes") renderChanges(); else renderHistory();
@@ -755,7 +799,7 @@ function statusLine(cid, day, big){
                   r.waiting_us?`<span class="tag red">${r.waiting_us} waiting on us</span>`:""].join("");
     return `<span class="small" style="display:flex;flex-direction:column;gap:4px">
       ${multi?`<b class="small">${esc(r.venue)}</b>`:""}
-      <span class="chips">${step(p.premap,"Pre-map")}${step(p.main,"Main map")}${step(p.after_count,"Count in")}${step(p.after_count,"After-count map")}${step(r.imported_at,"Imported", r.imported_at?t(r.imported_at):"")}</span>
+      <span class="chips">${step(p.premap,"Pre-map")}${step(p.main,"Main map")}${step(r.imported_at,"Imported", r.imported_at?t(r.imported_at):"")}${step(p.after_count,"After-count map")}</span>
       ${now||wait?`<span class="chips">${now}${wait}</span>`:""}
       ${big&&r.summary?`<span class="muted">${esc(r.summary)} · ${esc(r.machine)} · ${esc(t(r.finished_at||r.started_at))}</span>`:""}
     </span>`; }).join("");
@@ -925,6 +969,61 @@ function dayCards(day){
     .sort((a,b)=> (b.t.open+b.t.failed)-(a.t.open+a.t.failed) || a.name.localeCompare(b.name));
 }
 
+/* everything not in Pilot yet: open questions, answers not written yet, answers Pilot didn't take */
+const unmappedOf = t => t.open + t.failed + t.waiting;
+/* Dave 11/24 ("word salad"): one card per audit, the same rows in the same places on every card.
+   Name + machine; the headline count of what isn't mapped; progress; the last pass; the breakdown; one action. */
+function dashCard(x, today){
+  const t = x.t, c = x.client, un = unmappedOf(t), ran = x.rows.length>0;
+  const cyc = c ? (CYCLES.find(y=>y[0]===c.audit_cycle)||[,""])[1] : "";
+  const ms = c && mapState(c);
+  const rows = (x.cid && M.status) ? M.status.filter(r=>r.client_id===x.cid && r.audit_date===M.day) : [];
+  const P = k => rows.length>0 && rows.every(r=>((r.detail||{}).passes||{})[k]);
+  const imported = rows.length>0 && rows.every(r=>r.imported_at);
+  const step = (ok, label) => `<span class="${ok?"ok":"no"}">${ok?"✓":"○"} ${esc(label)}</span>`;
+  const tm = ts => ts ? new Date(ts).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}) : "";
+  const PN = {premap:"pre-map",main:"main map",after_count:"after-count map"};
+  const jobs = x.cid ? S.jobs.filter(j=>j.client_id===x.cid && (j.audit_date===M.day || (!j.audit_date && (j.requested_at||"").slice(0,10)===M.day))) : [];
+  const live = jobs.find(j=>["queued","running"].includes(j.status));
+  const waitJob = jobs.find(j=>j.import_status==="waiting_click");
+  // last pass: always one line, success or failure alike
+  const run = rows.find(r=>r.state==="running"), wp = rows.find(r=>r.state==="waiting_pilot"), fl = rows.find(r=>r.state==="failed");
+  const last = rows.slice().sort((a,b)=>String(b.finished_at||b.started_at).localeCompare(String(a.finished_at||a.started_at)))[0];
+  const pass = run ? ["blue", `Running now: ${PN[run.pass]||run.pass}`]
+    : live ? ["blue", live.status==="queued" ? `Queued: ${(live.detail||{}).kind==="apply"?"writing approved items":"map"}` : `Running now: ${(live.detail||{}).kind==="apply"?"writing approved items":"map"}`]
+    : wp ? ["amber", `Waiting: Pilot is open on ${shortName(wp.machine)}`]
+    : fl ? ["red", `Failed · ${PN[fl.pass]||fl.pass||"pass"} · ${tm(fl.finished_at||fl.started_at)}`, fl.summary]
+    : last ? ["green", `Succeeded · ${PN[last.pass]||last.pass||"pass"} · ${tm(last.finished_at||last.started_at)}`, last.summary]
+    : ["grey", M.day>today ? "Audit not done yet" : "No pass yet"];
+  const sum = k => Math.min(t.open, rows.reduce((a,r)=>a+(r[k]||0),0));
+  const row = (label, n, cls, sub) => `<span class="${sub?"sub":""}">${esc(label)}</span><span class="v ${n?cls:""}">${n||""}</span>`;
+  const head = un ? ["red", `${un} item${un===1?"":"s"} not mapped yet`] : ran ? ["green", "✓ Everything's mapped"] : ["grey", M.day>today ? "Audit not done yet" : "Not mapped yet"];
+  const canAfter = c && c.map_enabled && c.map_machine && P("main") && !P("after_count") && M.day<=today && !live && !run;
+  const machine = ms && ms.cls==="green" ? `<span class="mach">${esc(c.map_machine.toUpperCase())}</span>` : "";
+  return `<div class="ccard dash" role="button" tabindex="0" data-cc="${esc(x.cid||"")}" data-cv="${esc(x.venue)}">
+    <div class="ch"><b>${esc(x.name)}</b>${machine}</div>
+    <span class="small muted pos">${c?esc([POS_PREFIX[c.source_system]||"", cyc].filter(Boolean).join(" · ")):'<span class="tag red">Not linked to a client</span>'}${ms && ms.cls!=="green"?` · <span class="tag ${ms.cls}">${esc(ms.txt)}</span>`:""}</span>
+    <div class="big ${head[0]}">${esc(head[1])}</div>
+    <div class="sec">Progress</div>
+    <div class="steps">${step(P("premap"),"Pre-map")}${step(P("main"),"Main map")}${step(imported,"Imported")}${step(P("after_count"),"After-count")}</div>
+    <div class="sec">Last pass</div>
+    <div class="pass ${pass[0]}" title="${esc(pass[2]||"")}">${esc(pass[1])}</div>
+    <div class="sec">Not mapped yet</div>
+    <div class="dgrid">
+      ${row("Needs a person", t.open, "amber")}
+      ${row("Question for the client", sum("waiting_client"), "amber", true)}
+      ${row("Waiting on the count", sum("waiting_count"), "blue", true)}
+      ${row("Pilot didn't take it", t.failed, "red")}
+      ${row("Answered, waiting for the robot", t.waiting, "blue")}
+    </div>
+    <div class="sec">Mapped</div>
+    <div class="dgrid">
+      ${row("Mapped by the robot", t.robot, "green")}
+      ${row("Done", t.done, "green")}
+    </div>
+    <div class="act">${waitJob?`<button class="b primary" data-imp="${esc(waitJob.id)}">Import now</button>`:""}${canAfter?`<button class="b" data-aftercount="${esc(x.cid)}" title="The robot also starts this on its own when it sees the count in Pilot">Count is in: run after-count map</button>`:""}</div>
+  </div>`;
+}
 function renderMapping(){
   if (!M.ready){ $("#main").innerHTML = `<div class="msg info"><b>The day-by-day Mapping board isn't switched on in the database yet.</b> Run "STEP 5 - SUPABASE - mapping by audit day" (Google Drive → My Drive → Barmetrix Automation) in the Supabase SQL Editor, then reload this page.</div>`; return; }
   if (M.client) return renderClientAudit();
@@ -949,43 +1048,26 @@ function renderMapping(){
     </div>
     <div id="mboard">
     <div class="days">${days.map(d=>{
-      const cs = dayCards(d), t = cs.reduce((a,x)=>(a.open+=x.t.open, a.failed+=x.t.failed, a), {open:0, failed:0});
+      const cs = dayCards(d), un = cs.reduce((a,x)=>a+unmappedOf(x.t), 0), ran = cs.some(x=>x.rows.length);
       return `<button class="day ${d===M.day?"on":""} ${d===today?"today":""}" data-day="${d}">
         <span class="dn">${esc(fmtDay(d))}${d===today?" · today":""}</span>
         <span class="small muted">${cs.length} audit${cs.length===1?"":"s"}</span>
-        ${t.open?`<span class="tag amber">${t.open} need a person</span>`:""}${t.failed?`<span class="tag red">${t.failed} failed</span>`:""}</button>`; }).join("")}</div>
+        ${un?`<span class="tag amber">${un} not mapped yet</span>`:ran?`<span class="tag green">All mapped</span>`:""}</button>`; }).join("")}</div>
     ${earlier.size?`<div class="banner amber"><b>Still open from earlier audits</b>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">${[...earlier.values()].map(e=>{ const t = tally(e.rows), c = e.cid && clientOf(e.cid);
         return `<button class="b" data-ec="${esc(e.cid||"")}" data-ev="${esc(e.venue)}" data-ea="${esc(e.audit||"")}">${esc(c?c.client_display_name:e.venue)} · ${e.audit?esc(fmtDay(e.audit)):"no date"} · ${t.open+t.failed+t.waiting} open</button>`; }).join("")}</div></div>`:""}
-    <h2 style="margin:18px 0 10px;font-size:18px">${esc(fmtLong(M.day))} <span class="muted small" style="font-weight:400">${cards.length} audit${cards.length===1?"":"s"}</span></h2>
-    <div class="ccards">${cards.map(x=>{
-      const t = x.t, any = t.open+t.waiting+t.robot+t.done+t.failed;
-      const cyc = x.client ? (CYCLES.find(c=>c[0]===x.client.audit_cycle)||[,""])[1] : "";
-      const ms = x.client && mapState(x.client);
-      const jobs = x.cid ? S.jobs.filter(j=>j.client_id===x.cid && (j.audit_date===M.day || (!j.audit_date && (j.requested_at||"").slice(0,10)===M.day))) : [];
-      const waitJob = jobs.find(j=>j.import_status==="waiting_click");
-      return `<div class="ccard" role="button" tabindex="0" data-cc="${esc(x.cid||"")}" data-cv="${esc(x.venue)}">
-        <b>${esc(x.name)}</b>
-        <span class="small muted">${x.client?esc([POS_PREFIX[x.client.source_system]||"", cyc].filter(Boolean).join(" · ")):'<span class="tag red">Not linked to a client</span>'}</span>
-        ${ms?`<span class="small"><span class="tag ${ms.cls}">${esc(ms.txt)}</span></span>`:""}
-        ${x.cid?statusLine(x.cid, M.day):""}
-        ${jobs.length?`<span class="small" style="display:flex;flex-direction:column;gap:3px">${jobs.slice(0,4).reverse().map(j=>`<span>${jobLine(j)}</span>`).join("")}</span>`:""}
-        ${x.client && (x.client.map_enabled || waitJob)?`<span class="chips">${waitJob?`<button class="b primary" data-imp="${esc(waitJob.id)}">Import now</button>`:""}${x.client.map_machine?`<button class="b" data-mapnow="${esc(x.cid)}">Map now</button>`:""}</span>`:""}
-        <span class="chips">
-          ${t.open?`<span class="tag amber">${t.open} need a person</span>`:""}
-          ${t.failed?`<span class="tag red">${t.failed} failed</span>`:""}
-          ${t.waiting?`<span class="tag blue">${t.waiting} waiting for the robot</span>`:""}
-          ${t.robot?`<span class="tag green">${t.robot} mapped by the robot</span>`:""}
-          ${t.done?`<span class="tag">${t.done} done</span>`:""}
-          ${any||jobs.length?"":`<span class="muted small">${M.day>today?"Audit not done yet":"No mapping run yet"}</span>`}
-        </span></div>`; }).join("") || `<div class="muted">No audits on this day.</div>`}</div>
+    <h2 style="margin:18px 0 10px;font-size:18px">${esc(fmtLong(M.day))} <span class="muted small" style="font-weight:400">${cards.length} audit${cards.length===1?"":"s"}${(()=>{ const un = cards.reduce((a,x)=>a+unmappedOf(x.t),0); return un?` · <b style="color:var(--amber)">${un} item${un===1?"":"s"} not mapped yet</b>`:cards.some(x=>x.rows.length)?' · <b style="color:var(--green)">everything mapped</b>':""; })()}</span></h2>
+    <div class="ccards">${cards.map(x=>dashCard(x, today)).join("") || `<div class="muted">No audits on this day.</div>`}</div>
     </div><div id="mresults"></div>`;
   $("#wkp").onclick = ()=>moveWeek(-7); $("#wkn").onclick = ()=>moveWeek(7);
   $("#wkt").onclick = ()=>{ M.weekStart = mondayOf(todayISO()); M.day = todayISO(); reloadBoard(); };
   document.querySelectorAll("[data-day]").forEach(b=>b.onclick=()=>{ M.day=b.dataset.day; renderMapping(); });
   document.querySelectorAll("[data-cc]").forEach(b=>{ const go = ()=>openClient(b.dataset.cc||null, b.dataset.cv, M.day);
     b.onclick = go; b.onkeydown = e=>{ if (e.target===b && (e.key==="Enter"||e.key===" ")){ e.preventDefault(); go(); } }; });
-  document.querySelectorAll("[data-mapnow]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); mapNow(clientOf(b.dataset.mapnow), M.day, b); });
+  // Dave 11/24: no blind "Map now" on the board - the only run button is "the count is in", and it asks first
+  document.querySelectorAll("[data-aftercount]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); const c = clientOf(b.dataset.aftercount);
+    if (!confirm(`Run the after-count map for ${c.client_display_name} now?\n\nUse this once the count is in Pilot. The robot on ${c.map_machine} writes the answers already given, maps against the count and imports. Open questions stay open.\n\nIf Pilot doesn't have the count yet, it runs a main map instead.`)) return;
+    mapNow(c, M.day, b); });
   document.querySelectorAll("[data-imp]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); releaseImport(S.jobs.find(j=>j.id===b.dataset.imp), b); });
   $("#mmach")?.addEventListener("click", openMachines);
   document.querySelectorAll("[data-ec]").forEach(b=>b.onclick=()=>openClient(b.dataset.ec||null, b.dataset.ev, b.dataset.ea||null));
@@ -1034,27 +1116,52 @@ function renderClientAudit(){
   // Dave 11/18: client questions get their OWN place, all together - not buried in the answered list
   const cq = (M.notes||[]).filter(n=>n.status!=="dropped" && n.kind==="question").length;
   const tabs = [["open","Needs a person",open.length],["client","Questions for the client",cq],["waiting","Waiting for the robot",waiting.length],["robot","Mapped by the robot",robot.length],["done","Done",done.length]];
+  // Dave 11/24: "I mapped these myself" works in every situation - open questions AND answers not written yet
+  const unwritten = it.filter(i=>["open","decided","failed"].includes(i.status));
+  const busy = cl && c.audit && c.audit!=="all" && writeJob(cl, c.audit);
   $("#main").innerHTML = `
-    <div class="bar"><button class="b" id="mback">‹ ${esc(fmtLong(M.day))}</button></div>
-    <div class="bar" style="align-items:baseline">
-      <h2 style="margin:0;font-size:22px">${esc(name)}</h2>
-      ${cl?"":'<span class="tag red">Not linked to a client</span>'}
-      <span class="grow"></span>
-      <label style="margin:0">Audit</label>
-      <select id="maudit" style="max-width:300px">${audits.map(a=>`<option value="${a}" ${a===c.audit?"selected":""}>${esc(fmtLong(a))}</option>`).join("")}
-        ${c.audit===null?'<option value="" selected>No audit date</option>':""}<option value="all" ${c.audit==="all"?"selected":""}>All audits</option></select>
+    <div class="chead">
+      <div class="row1">
+        <button class="b" id="mback">‹ ${esc(fmtShort(M.day))}</button>
+        <h2>${esc(name)}</h2>
+        ${cl?"":'<span class="tag red">Not linked to a client</span>'}
+        <span class="grow" style="flex:1"></span>
+        <select id="maudit" style="max-width:220px" aria-label="Audit">${audits.map(a=>`<option value="${a}" ${a===c.audit?"selected":""}>Audit ${esc(fmtShort(a))}</option>`).join("")}
+          ${c.audit===null?'<option value="" selected>No audit date</option>':""}<option value="all" ${c.audit==="all"?"selected":""}>All audits</option></select>
+      </div>
+      ${openBanner(open.length, waiting.length, writeNowBar(cl, c, it) + (unwritten.length && !busy ? `<button class="b" id="mclear" title="Use this when you've mapped or trashed them yourself in Pilot. They move to Done as 'done by hand in Pilot' and the robot won't write them.">I mapped these in Pilot myself</button>` : ""))}
+      <div class="tabs">${tabs.map(([k,l,n])=>`<button data-mt="${k}" class="${M.tab===k?"on":""}">${l} (${n})${k==="open"&&n?' <span class="tag red">'+n+'</span>':""}</button>`).join("")}</div>
     </div>
     ${cl?"":`<div class="msg info">These items came from a Pilot venue name that doesn't match a client in the Clients tab. They still work; Claude links them on the next run.</div>`}
-    ${openBanner(open.length, waiting.length)}
-    <div class="tabs" style="padding:0;margin:0 0 14px">${tabs.map(([k,l,n])=>`<button data-mt="${k}" class="${M.tab===k?"on":""}">${l} (${n})${k==="open"&&n?' <span class="tag red">'+n+'</span>':""}</button>`).join("")}</div>
-    ${writeNowBar(cl, c, it)}
+    ${lastWriteLine(cl, c)}
     <div id="mbody"></div>
     ${c.cid && c.audit && c.audit!=="all" && statusLine(c.cid, c.audit, true) ? `<div class="card" style="margin:14px 0">${statusLine(c.cid, c.audit, true)}</div>` : ""}`;
   $("#mshow")?.addEventListener("click", ()=>{ M.tab="open"; M.other=null; renderClientAudit(); $("#mbody")?.scrollIntoView({behavior:"smooth"}); });
   $("#mback").onclick = ()=>{ M.client=null; M.items=[]; render(); };
-  $("#mwrite")?.addEventListener("click", ()=>{ M.confirmWrite=true; renderClientAudit(); });
-  $("#mwrite-no")?.addEventListener("click", ()=>{ M.confirmWrite=false; renderClientAudit(); });
-  $("#mwrite-yes")?.addEventListener("click", e=>writeNow(cl, c, e.currentTarget));
+  $("#mwrite")?.addEventListener("click", e=>{
+    const n = Number(e.currentTarget.dataset.n), nOpen = open.length, mc = cl.map_machine||"the mapping computer";
+    const msg = (nOpen ? `${nOpen} question${nOpen>1?"s are":" is"} still open. ${nOpen>1?"They stay":"It stays"} unmapped in Pilot until someone answers.\n\nWrite the ${n} approved item${n>1?"s":""} now anyway?`
+                       : `Write ${n} approved item${n>1?"s":""} into Pilot now?`)
+      + `\n\nPilot on ${mc} is in use while it writes (about a minute, plus 15 seconds per item). Make sure nobody is in the middle of something in Pilot on that computer.`;
+    if (confirm(msg)) writeNow(cl, c, e.currentTarget); });
+  $("#mclear")?.addEventListener("click", async e=>{
+    const n = k => unwritten.filter(i=>i.status===k).length, parts = [];
+    if (n("open")) parts.push(`${n("open")} open question${n("open")>1?"s":""}`);
+    if (n("decided")) parts.push(`${n("decided")} answer${n("decided")>1?"s":""} not written yet`);
+    if (n("failed")) parts.push(`${n("failed")} Pilot didn't take`);
+    if (!confirm(`Clear ${unwritten.length} item${unwritten.length>1?"s":""} that the robot hasn't put in Pilot (${parts.join(", ")})?\n\nUse this when you've mapped or trashed them yourself in Pilot. They move to Done as "done by hand in Pilot" and the robot won't write them. It learns your answers from Pilot itself on its next run.`)) return;
+    const btn = e.currentTarget; btn.disabled = true;
+    const now = new Date().toISOString(), ids = unwritten.map(i=>i.id); let done = 0;
+    for (let k=0; k<ids.length; k+=100){
+      const r = await sb.from("mapping_items").update({status:"applied", applied_at:now, applied_detail:"done by hand in Pilot",
+        decided_by:S.user.email, decided_at:now, updated_at:now}).in("id", ids.slice(k,k+100)).in("status",["open","decided","failed"]).select("id");
+      if (r.error){ toast("Stopped: "+r.error.message); break; }
+      done += r.data.length;
+    }
+    toast(`Cleared ${done} item${done===1?"":"s"}.`);
+    await refresh(true);
+    if (M.client) { await loadClientItems().catch(()=>{}); renderClientAudit(); }
+  });
   $("#maudit").onchange = async e=>{ M.client.audit = e.target.value===""?null:e.target.value; try{ await loadClientItems(); }catch(er){ toast(er.message); } renderClientAudit(); };
   document.querySelectorAll("[data-mt]").forEach(b=>b.onclick=()=>{ M.tab=b.dataset.mt; M.other=null; renderClientAudit(); });
   if (M.tab==="open") mapOpen(open);
@@ -1066,12 +1173,13 @@ function renderClientAudit(){
 
 /* Dave 11/18 (The Corner): the page "is showing a state of completion; however, the process is not even 1/2 done".
    Open questions are the FIRST thing on the page, every time, in red - never below the client notes. */
-function openBanner(nOpen, nWaiting){
-  if (nOpen) return `<div class="banner red" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <b style="font-size:16px">${nOpen} question${nOpen>1?"s":""} still need${nOpen>1?"":"s"} you — this audit is NOT done.</b>
-      ${M.tab!=="open"?`<button class="b primary" id="mshow">Show them</button>`:""}</div>`;
-  if (nWaiting) return `<div class="banner amber"><b>Every question is answered.</b> ${nWaiting} answer${nWaiting>1?"s are":" is"} waiting to be written into Pilot.</div>`;
-  return `<div class="banner green"><b>Nothing open for this audit.</b></div>`;
+function openBanner(nOpen, nWaiting, buttons){
+  const end = `<span class="grow"></span>${buttons||""}`;
+  if (nOpen) return `<div class="banner red">
+      <b>${nOpen} question${nOpen>1?"s":""} still need${nOpen>1?"":"s"} you — this audit is NOT done.</b>
+      ${M.tab!=="open"?`<button class="b sm" id="mshow">Show them</button>`:""}${end}</div>`;
+  if (nWaiting) return `<div class="banner amber"><b>Every question is answered.</b> <span>${nWaiting} answer${nWaiting>1?"s are":" is"} waiting to be written into Pilot.</span>${end}</div>`;
+  return `<div class="banner green"><b>Nothing open for this audit.</b>${end}</div>`;
 }
 
 /* "Write to Pilot now": approved items are written into Pilot by the client's mapping computer
@@ -1080,24 +1188,21 @@ function writeJob(cl, audit){
   return S.jobs.find(j=>cl && j.client_id===cl.id && j.pass==="manual" && (j.detail||{}).kind==="apply"
     && j.audit_date===audit && ["queued","running"].includes(j.status));
 }
+/* Dave 11/24: just the button in the frozen bar; the explanation is the confirm that follows the click
+   (Dave 11/18: it still checks for open questions before it writes) */
 function writeNowBar(cl, c, it){
   if (!cl || !c.audit || c.audit==="all") return "";
-  const n = it.filter(i=>i.status==="decided" && !["reject","wait_count","created"].includes(i.choice)).length;
   const job = writeJob(cl, c.audit);
+  if (job) return `<span class="tag blue">${job.status==="queued"?`Writing to Pilot: waiting for ${esc(shortName(job.machine||""))} to pick it up`:`Writing to Pilot on ${esc(shortName(job.machine||""))} now`}</span>`;
+  const n = it.filter(i=>i.status==="decided" && !["reject","wait_count","created"].includes(i.choice)).length;
+  if (!n) return "";
+  return `<button class="b primary" id="mwrite" data-n="${n}" title="Writes the approved answers into Pilot on ${esc(cl.map_machine||"the mapping computer")} now, instead of waiting for the next pass">Write ${n} approved to Pilot</button>`;
+}
+function lastWriteLine(cl, c){
+  if (!cl || !c.audit || c.audit==="all") return "";
   const last = S.jobs.filter(j=>j.client_id===cl.id && (j.detail||{}).kind==="apply" && j.audit_date===c.audit && ["done","failed"].includes(j.status))
     .sort((a,b)=>String(b.finished_at).localeCompare(String(a.finished_at)))[0];
-  if (job) return `<div class="banner blue"><b>Writing to Pilot on ${esc(job.machine||"")}…</b>${job.status==="queued"?"Waiting for that computer to pick it up (under a minute when it's on).":"Running now. Pilot on that computer is in use until it finishes."}</div>`;
-  const lastLine = last ? `<span class="muted small">Last write: ${esc(fmtTime(last.finished_at))} — ${esc(last.summary||last.status)}</span>` : "";
-  if (!n) return lastLine ? `<div class="bar">${lastLine}</div>` : "";
-  const nOpen = it.filter(i=>i.status==="open").length;
-  // Dave 11/18: "It has no check for when I click the start mapping button to see if there is anything open"
-  if (M.confirmWrite) return `<div class="banner ${nOpen?"red":"amber"}"><b>Write ${n} approved item${n>1?"s":""} into Pilot now?</b>
-      ${nOpen?`<div style="margin:6px 0"><b>${nOpen} question${nOpen>1?"s are":" is"} still open below.</b> They stay unmapped in Pilot until someone answers them. Answer them first, then write everything in one go.</div>`:""}
-      Pilot on ${esc(cl.map_machine||"the mapping computer")} will close and reopen while it works (about a minute, plus 15 seconds per item). Make sure nobody is in the middle of something in Pilot on that computer.
-      <div style="margin-top:8px;display:flex;gap:8px">${nOpen
-        ?`<button class="b primary" id="mwrite-no">Answer the ${nOpen} open first</button><button class="b" id="mwrite-yes">Write the ${n} now anyway</button>`
-        :`<button class="b primary" id="mwrite-yes">Yes, write them now</button><button class="b" id="mwrite-no">Not now</button>`}</div></div>`;
-  return `<div class="bar"><button class="b primary" id="mwrite">Write ${n} approved item${n>1?"s":""} to Pilot now</button>${lastLine}</div>`;
+  return last ? `<p class="muted small" style="margin:0 0 10px">Last write to Pilot: ${esc(fmtTime(last.finished_at))} — ${esc(last.summary||last.status)}</p>` : "";
 }
 async function writeNow(cl, c, btn){
   if (!cl.map_machine){ toast("This client has no mapping computer yet (Clients tab → client → Mapping)."); return; }
@@ -1116,31 +1221,13 @@ async function writeNow(cl, c, btn){
 function mapOpen(items){
   const byKind = {}; items.forEach(i=>(byKind[i.kind] ||= []).push(i));
   const kinds = [...KIND_ORDER.filter(k=>byKind[k]), ...Object.keys(byKind).filter(k=>!KIND_ORDER.includes(k))];
-  /* Dave 11/17: "Once you are behind, I have to take over" - one button clears every open question he has handled
-     by hand in Pilot, so the robot never writes them a second time. Pilot's own mappings teach the robot. */
-  const clearBar = !items.length ? "" : M.confirmClear
-    ? `<div class="banner amber"><b>Clear all ${items.length} open question${items.length>1?"s":""} below?</b>
-        Use this when you've mapped or trashed them yourself in Pilot. They move to Finished as "done by hand in Pilot" and the robot won't touch them. The robot learns your answers from Pilot itself on its next run.
-        <div style="margin-top:8px;display:flex;gap:8px"><button class="b primary" id="mclear-yes">Yes, clear them</button><button class="b" id="mclear-no">Not now</button></div></div>`
-    : `<div class="bar"><button class="b" id="mclear">I mapped these in Pilot myself: clear all ${items.length} questions</button></div>`;
-  $("#mbody").innerHTML = items.length ? `${clearBar}<p class="muted small" style="margin-top:0">Pick the right button. When you're done, press "Write approved items to Pilot now" above. "None of these" leaves it unmapped and stops it being suggested again.</p>
+  /* Dave 11/17: "Once you are behind, I have to take over" - the "I mapped these in Pilot myself" button in the frozen
+     bar clears everything not yet in Pilot (Dave 11/24: open AND answered-but-unwritten), so the robot never writes them twice */
+  $("#mbody").innerHTML = items.length ? `<p class="muted small" style="margin-top:0">Pick the right button. When you're done, press "Write approved to Pilot" above. "Leave it unmapped" stops it being asked again.</p>
     ${kinds.map(k=>`<h3 style="margin:18px 0 8px;font-size:15px">${esc(KIND_HEAD[k]||KIND[k]||k)} <span class="muted small">${byKind[k].length}</span></h3>
       <div class="actions qlist">${byKind[k].map(cardHTML).join("")}</div>`).join("")}`
     : `<div class="center" style="min-height:30vh"><b>Nothing needs a person for this audit.</b><span class="muted">New items appear here after each mapping run.</span></div>`;
   wireCards();
-  const mc = $("#mclear"); if (mc) mc.onclick = ()=>{ M.confirmClear = true; mapOpen(items); };
-  const mn = $("#mclear-no"); if (mn) mn.onclick = ()=>{ M.confirmClear = false; mapOpen(items); };
-  const my = $("#mclear-yes"); if (my) my.onclick = async()=>{
-    my.disabled = true;
-    const now = new Date().toISOString();
-    const r = await sb.from("mapping_items").update({status:"applied", applied_at:now, applied_detail:"done by hand in Pilot",
-      decided_by:S.user.email, decided_at:now, updated_at:now}).in("id", items.map(i=>i.id)).eq("status","open").select("id");
-    M.confirmClear = false;
-    if (r.error){ toast("Not cleared: "+r.error.message); my.disabled = false; return; }
-    toast(`Cleared ${(r.data||[]).length} question${(r.data||[]).length===1?"":"s"}.`);
-    await refresh(true);
-    if (M.client) { await loadClientItems().catch(()=>{}); renderClientAudit(); }
-  };
 }
 /* MOD vs menu item (Dave 11/12): a modifier rides on an item that already pours and is mapped
    differently, so every card says which it is. The robot puts it at the start of the reason. */
@@ -1221,7 +1308,7 @@ function wireCards(){
         : o.action==="CREATED" ? "Got it. The next pass maps it to the product you set up."
         : o.action==="KEEP" ? "Kept as it is. The robot won't ask about it again."
         : o.action==="LEAVE" ? "Left unmapped. The robot won't ask about it again."
-        : o.action==="WRITE_IN" ? "Saved. Claude reads it on the next pass." : `Chosen: ${o.label}. The next pass writes it (or press "Write approved items to Pilot now").`);
+        : o.action==="WRITE_IN" ? "Saved. Claude reads it on the next pass." : `Chosen: ${o.label}. The next pass writes it (or press "Write approved to Pilot").`);
       Object.assign(it, patch); loadMapping().catch(()=>{}).then(render);
     });
     row.querySelectorAll("[data-opt]").forEach(b=>b.onclick=async()=>{
@@ -1233,7 +1320,7 @@ function wireCards(){
       const r = await sb.from("mapping_items").update(patch).eq("id",id).eq("status","open").select("id");
       if (r.error){ toast("Not saved: "+r.error.message); row.querySelectorAll("button").forEach(x=>x.disabled=false); return; }
       if (!r.data?.length) toast("Someone already decided this one.");
-      else toast(`Chosen: ${o.label}. Press "Write approved items to Pilot now" when you're ready.`);
+      else toast(`Chosen: ${o.label}. Press "Write approved to Pilot" when you're ready.`);
       Object.assign(it, patch); loadMapping().catch(()=>{}).then(render);
     });
     row.querySelectorAll("[data-a]").forEach(b=>b.onclick=async(e)=>{
@@ -1264,7 +1351,7 @@ function wireCards(){
       const r = await sb.from("mapping_items").update(patch).eq("id",id).eq("status","open").select("id");
       if (r.error){ toast("Not saved: "+r.error.message); b.disabled=false; return; }
       if (!r.data?.length) toast("Someone already decided this one.");
-      else toast({approve:`Approved. Press "Write approved items to Pilot now" when you're ready.`,reject:"Left unmapped — it won't be suggested again.",noted:"Noted.","other-save":"Saved. A written answer needs Claude to read it before it can go into Pilot."}[a]);
+      else toast({approve:`Approved. Press "Write approved to Pilot" when you're ready.`,reject:"Left unmapped — it won't be suggested again.",noted:"Noted.","other-save":"Saved. A written answer needs Claude to read it before it can go into Pilot."}[a]);
       M.other=null; const it = M.items.find(x=>x.id===id); if (it) Object.assign(it, patch);
       loadMapping().catch(()=>{}).then(render);
     });
