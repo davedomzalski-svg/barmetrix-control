@@ -231,6 +231,9 @@ async function loadClients(){
   if (!o.error){ const by = new Map(o.data.map(r=>[r.id, r.map_order])); S.clients.forEach(c=>c.map_order = by.get(c.id) ?? null); }
   const ms = await sb.from("robot_settings").select("value,updated_by,updated_at").eq("key","mapping").maybeSingle();
   S.master = (ms.error || !ms.data) ? null : {on: !!(ms.data.value||{}).on, by: ms.data.updated_by, at: ms.data.updated_at};
+  // each Pilot client behind a shared-login row: its own computer + robot switch (Dave 11/24; robot reads the same)
+  const sp = await sb.from("robot_settings").select("value").eq("key","pilot_split").maybeSingle();
+  S.split = (sp.error || !sp.data) ? {} : (sp.data.value || {});
   if (S.hasMapCols){
     const m = await sb.from("machines").select("*").order("name");
     S.machines = m.error ? [] : m.data;
@@ -410,7 +413,34 @@ const shortName = n => String(n||"").replace(/^MIAMI-/,"");
    POS_LOGIN_OF: a pull-only login whose sales go into ANOTHER client's Pilot client. */
 const PILOT_CLIENTS_OF = {"Coasnostra & El Cuban Diner": ["Cosanostra", "El Cuban Diner"]};
 const POS_LOGIN_OF = {"The Naked Tomato": "Moxy Hotel"};
-const pilotsOf = c => PILOT_CLIENTS_OF[c.client_display_name] || [c.pilot_name||c.client_display_name];
+const pilotsOf = c => c._pilot ? [c._pilot] : PILOT_CLIENTS_OF[c.client_display_name] || [c.pilot_name||c.client_display_name];
+/* One Pilot client of a shared-login row, as its own client: its computer and switch come from robot_settings
+   'pilot_split' (falling back to the row's). Dave 11/24: "They are separate clients in Pilot so they are separate here." */
+function viewOf(c, venue){
+  if (!c || !PILOT_CLIENTS_OF[c.client_display_name] || !venue) return c;
+  const p = PILOT_CLIENTS_OF[c.client_display_name].find(x=>normName(x)===normName(venue)) || venue;
+  const s = (S.split||{})[p] || {};
+  return Object.assign({}, c, {_row:c, _pilot:p, pilot_name:p,
+    map_machine: "map_machine" in s ? s.map_machine : c.map_machine,
+    map_enabled: "map_enabled" in s ? !!s.map_enabled : c.map_enabled});
+}
+/* Save one Pilot client's computer / switch. Every Pilot client of the row gets an entry (so the row's own columns
+   never silently move the other one), and the row mirrors the first Pilot client for the older screens. */
+async function savePilot(v, patch){
+  const row = v._row, names = PILOT_CLIENTS_OF[row.client_display_name];
+  const fresh = await sb.from("robot_settings").select("value").eq("key","pilot_split").maybeSingle();
+  if (fresh.error) return fresh.error.message;
+  const split = Object.assign({}, (fresh.data&&fresh.data.value)||{});
+  names.forEach(p=>{ const cur = viewOf(row, p); split[p] = Object.assign({map_machine:cur.map_machine, map_enabled:!!cur.map_enabled}, split[p]||{}); });
+  split[v._pilot] = Object.assign({}, split[v._pilot], patch);
+  const r = await sb.from("robot_settings").update({value:split, updated_by:S.user.email, updated_at:new Date().toISOString()}).eq("key","pilot_split").select("key");
+  if (r.error || !r.data?.length) return r.error?.message || "no settings row";
+  S.split = split;
+  const first = split[names[0]];
+  const m = await sb.from("clients").update({map_machine:first.map_machine, map_machine_picked:true, map_enabled:names.some(p=>split[p].map_enabled)}).eq("id",row.id).select("id");
+  if (!m.error && m.data?.length){ row.map_machine = first.map_machine; row.map_machine_picked = true; row.map_enabled = names.some(p=>split[p].map_enabled); }
+  return null;
+}
 const partOf = c => POS_LOGIN_OF[c.client_display_name]
   || (!c.pilot_name && Object.entries(PILOT_CLIENTS_OF).find(([k,v])=>k!==c.client_display_name && v.some(p=>normName(p)===normName(c.client_display_name)))?.[0])
   || null;
@@ -431,7 +461,9 @@ function renderComputers(){
   if (!S.hasMapCols){ $("#main").innerHTML = `<div class="msg info">Mapping isn't switched on in the database yet.</div>`; return; }
   const ms = (S.machines||[]).slice().sort((a,b)=>a.name.localeCompare(b.name));
   const tom = addDays(todayISO(),1);
-  const live = S.clients.filter(c=>c.status==="active");
+  // a shared-login row becomes one row per Pilot client (Cosanostra, El Cuban Diner)
+  const live = S.clients.filter(c=>c.status==="active")
+    .flatMap(c=>PILOT_CLIENTS_OF[c.client_display_name] ? PILOT_CLIENTS_OF[c.client_display_name].map(p=>Object.assign(viewOf(c,p), {client_display_name:p})) : [c]);
   const t = CM.q.toLowerCase();
   const rows = live.filter(c=>!t || c.client_display_name.toLowerCase().includes(t))
     .sort((a,b)=>a.client_display_name.localeCompare(b.client_display_name, "en", {sensitivity:"base"}));   // Dave 11/24: A to Z
@@ -462,19 +494,18 @@ function renderComputers(){
       <td colspan="2" class="muted">Mapped through the <b>${esc(parent)}</b> row (shared login) — set its computer there</td></tr>`;
     const btns = ms.map(m=>{
       const sel = c.map_machine===m.name, n = holdNote(m, c);
-      return `<button class="b sm ${sel?"primary":""}" data-pick="${esc(m.name)}" data-c="${esc(c.id)}" style="display:flex;flex-direction:column;align-items:flex-start;min-width:150px;padding:6px 10px">
+      return `<button class="b sm ${sel?"primary":""}" data-pick="${esc(m.name)}" data-c="${esc(c.id)}" data-p="${esc(c._pilot||"")}" style="display:flex;flex-direction:column;align-items:flex-start;min-width:150px;padding:6px 10px">
         <span>${sel?"✓ ":""}${esc(shortName(m.name))}</span><span class="small" style="opacity:.85">${esc(n.txt)}</span></button>`; }).join("");
     const chosen = ms.find(m=>m.name===c.map_machine), note = chosen && holdNote(chosen, c);
     const warn = !c.map_enabled ? "" : !c.map_machine ? `<span class="tag red">Pick a computer</span>`
       : !chosen ? `<span class="tag red">${esc(shortName(c.map_machine))} isn't a robot computer any more — pick one</span>`
       : chosen.kind!=="audit" ? `<span class="tag red">${esc(shortName(chosen.name))} is a desk machine — it won't map until it's set to Audit machine above</span>`
       : note && note.cls!=="green" ? `<span class="tag ${note.cls}">${esc(shortName(chosen.name))}: ${esc(note.txt)}</span>` : `<span class="tag green">Ready</span>`;
-    const ps = pilotsOf(c);
-    const sub = ps.length>1 ? `<div class="small"><b>${ps.length} Pilot clients:</b> ${esc(ps.join(" + "))}</div><div class="small muted">One Toast login. Both are mapped on the computer you pick.</div>`
+    const sub = c._pilot ? `<div class="small muted">Shares a Toast login with ${esc(PILOT_CLIENTS_OF[c._row.client_display_name].filter(p=>p!==c._pilot).join(", "))}</div>`
       : c.pilot_name&&normName(c.pilot_name)!==normName(c.client_display_name) ? `<div class="small muted">Pilot: ${esc(c.pilot_name)}</div>` : "";
     return `${head}<tr style="cursor:default"><td><b>${esc(c.client_display_name)}</b>${sub}</td>
       <td class="mono small">${c.next_due_date?esc(fmtDate(c.next_due_date)):"—"}</td>
-      <td><button class="sw ${c.map_enabled?"on":""}" data-tog="${esc(c.id)}"><i></i>${c.map_enabled?"Robot maps it":"Off"}</button></td>
+      <td><button class="sw ${c.map_enabled?"on":""}" data-tog="${esc(c.id)}" data-p="${esc(c._pilot||"")}"><i></i>${c.map_enabled?"Robot maps it":"Off"}</button></td>
       <td><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${btns}${warn}</div></td></tr>`;
   };
   $("#main").innerHTML = `
@@ -486,18 +517,25 @@ function renderComputers(){
     <div class="tablewrap"><table style="min-width:760px"><thead><tr><th>Client</th><th>Next audit</th><th>Robot</th><th>Mapped on</th></tr></thead>
       <tbody>${rows.map(row).join("") || '<tr><td colspan="4" class="muted">No clients.</td></tr>'}</tbody></table></div>`;
   const q = $("#cmq"); q.oninput = ()=>{ CM.q = q.value; const pos = q.selectionStart; renderComputers(); const n=$("#cmq"); n.focus(); n.setSelectionRange(pos,pos); };
+  const rowOf = b => live.find(x=>x.id===b.dataset.c && (x._pilot||"")===(b.dataset.p||""));
   document.querySelectorAll("[data-pick]").forEach(b=>b.onclick=async()=>{
-    const c = S.clients.find(x=>x.id===b.dataset.c), m = b.dataset.pick;
+    const c = rowOf(b), m = b.dataset.pick;
     if (c.map_machine===m) return;
     b.disabled = true;
+    if (c._pilot){ const err = await savePilot(c, {map_machine:m});
+      if (err){ toast("Not saved: "+err); b.disabled=false; return; }
+      toast(`${c._pilot} now maps on ${shortName(m)}.`); renderComputers(); return; }
     const r = await sb.from("clients").update({map_machine:m, map_machine_picked:true}).eq("id",c.id).select("id");
     if (r.error || !r.data?.length){ toast("Not saved: "+(r.error?.message||"no row")); b.disabled=false; return; }
     c.map_machine = m; c.map_machine_picked = true;
     toast(`${c.client_display_name} now maps on ${shortName(m)}.`); renderComputers();
   });
   document.querySelectorAll("[data-tog]").forEach(b=>b.onclick=async()=>{
-    const c = S.clients.find(x=>x.id===b.dataset.tog), on = !c.map_enabled;
+    const c = live.find(x=>x.id===b.dataset.tog && (x._pilot||"")===(b.dataset.p||"")), on = !c.map_enabled;
     b.disabled = true;
+    if (c._pilot){ const err = await savePilot(c, {map_enabled:on});
+      if (err){ toast("Not saved: "+err); b.disabled=false; return; }
+      toast(`${c._pilot}: robot mapping ${on?"on":"off"}.`); renderComputers(); return; }
     const r = await sb.from("clients").update({map_enabled:on}).eq("id",c.id).select("id");
     if (r.error || !r.data?.length){ toast("Not saved: "+(r.error?.message||"no row")); b.disabled=false; return; }
     c.map_enabled = on;
@@ -694,7 +732,7 @@ function cleanJob(cid){
   return S.jobs.find(j=>j.client_id===cid && (j.detail||{}).cleanup && ["queued","running"].includes(j.status));
 }
 function renderCleanClient(){
-  const c = D.cclient, cl = clientOf(c.cid), items = M.items||[];
+  const c = D.cclient, cl = viewOf(clientOf(c.cid), c.venue), items = M.items||[];
   const counts = Object.fromEntries(CLEAN_TABS.map(([k])=>[k, items.filter(r=>cleanTabOf(r)===k).length]));
   const inTab = items.filter(r=>cleanTabOf(r)===D.ctab);
   const toWrite = items.filter(r=>r.status==="decided" && !["reject","wait_count","created"].includes(r.choice)).length;
@@ -999,7 +1037,9 @@ function dayCards(day){
     cards.get(k).rows.push(r);
   });
   return [...cards.values()].map(x=>{ const c = x.cid && clientOf(x.cid);
-      return Object.assign(x, {name: c ? c.client_display_name : x.venue, client:c, t:tally(x.rows)}); })
+      // a shared-login row shows each Pilot client under its own name, with its own computer and switch (11/24)
+      return Object.assign(x, {name: c ? (PILOT_CLIENTS_OF[c.client_display_name] ? x.venue : c.client_display_name) : x.venue,
+                               client: c && viewOf(c, x.venue), t:tally(x.rows)}); })
     .sort((a,b)=> (b.t.open+b.t.failed)-(a.t.open+a.t.failed) || a.name.localeCompare(b.name));
 }
 
@@ -1140,7 +1180,7 @@ function statusWord(i){
 
 /* ---------- one client, one audit ---------- */
 function renderClientAudit(){
-  const c = M.client, cl = c.cid && clientOf(c.cid), name = cl ? cl.client_display_name : c.venue;
+  const c = M.client, cl = c.cid && viewOf(clientOf(c.cid), c.venue), name = cl ? (cl._pilot || cl.client_display_name) : c.venue;
   const it = M.items;
   const open = it.filter(i=>i.status==="open");
   const waiting = it.filter(i=>i.status==="decided" || (i.choice==="wrong" && i.status!=="open"));
