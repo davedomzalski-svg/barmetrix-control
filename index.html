@@ -457,7 +457,7 @@ async function loadDb(){
   const cq = await sb.from("mapping_items").select("client_id,venue,status,choice").eq("kind","cleanup");
   D.clean = cq.error ? [] : cq.data;
   if (D.client) await loadDbItems();
-  if (D.cclient) await loadCleanItems();
+  if (D.cclient && S.view==="dbreview") await loadCleanItems();   // shares M.items with Mapping - see loadMapping
 }
 function runLine(){
   const r = D.run;
@@ -642,7 +642,7 @@ function renderCleanClient(){
     toast(`Sent to ${cl.map_machine}. This page updates as fixes are written.`);
     await refresh(true); renderCleanClient();
     const t0 = Date.now();
-    const tick = setInterval(async()=>{ await refresh(true); if (D.cclient){ await loadCleanItems().catch(()=>{}); renderCleanClient(); }
+    const tick = setInterval(async()=>{ await refresh(true); if (D.cclient && S.view==="dbreview"){ await loadCleanItems().catch(()=>{}); renderCleanClient(); }
       if (!cleanJob(c.cid) || Date.now()-t0 > 30*60e3) clearInterval(tick); }, 15000);
   };
   if (D.ctab==="open"){
@@ -666,7 +666,7 @@ function wireClean(){
       const o = (it.options||[])[+b.dataset.lib];
       if (o.action==="ASK_CLIENT"){ M.ask=id; M.other=null; renderCleanClient(); $("#aq")?.focus(); return; }
       if (o.action==="WRITE_IN" && !o.text){ M.other=id; M.ask=null; renderCleanClient(); $("#ot")?.focus(); return; }
-      if (o.action==="KEEP") return save({status:"decided", choice:"reject", chosen:o, suggestion:o.label}, "Kept as it is.");
+      if (o.action==="KEEP" || o.action==="LEAVE") return save({status:"decided", choice:"reject", chosen:o, suggestion:o.label}, o.action==="LEAVE" ? "Left unmapped." : "Kept as it is.");
       if (o.action==="WRITE_IN") return save({status:"decided", choice:"other", other_text:o.text, chosen:o, suggestion:o.label}, "Saved.");
       save({status:"decided", choice:"approve", chosen:o, suggestion:o.label, target:o.target||null, target_type:o.type||null, delta_oz:o.pour_oz??null},
            `Approved: ${o.label}. Press "Write approved fixes to Pilot now" when you're ready.`);
@@ -734,7 +734,9 @@ async function loadMapping(){
   // where each client's mapping stands (table map_status, STEP 12; written by the robot as it works)
   const ms = await sb.from("map_status").select("*").gte("audit_date",M.weekStart).lte("audit_date",end);
   M.status = ms.error ? null : ms.data;
-  if (M.client) await loadClientItems();
+  // Dave 11/24 (Bar Tulios cards blinking in and out): Mapping and Database Review share M.items, and refresh() loads
+  // both at once - so only the screen on view may fill it, or the last load to finish wins and the cards flip
+  if (M.client && S.view==="mapping") await loadClientItems();
 }
 /* the status line: pre-map -> main map -> count -> after-count -> import, and what is still waiting on whom */
 function statusLine(cid, day, big){
@@ -1107,7 +1109,7 @@ async function writeNow(cl, c, btn){
   toast(`Sent to ${cl.map_machine}. The tab updates as items are written.`);
   await refresh(true);
   const t0 = Date.now();
-  const tick = setInterval(async()=>{ await refresh(true); if (M.client) { await loadClientItems().catch(()=>{}); renderClientAudit(); }
+  const tick = setInterval(async()=>{ await refresh(true); if (M.client && S.view==="mapping") { await loadClientItems().catch(()=>{}); renderClientAudit(); }
     if (!writeJob(cl, c.audit) || Date.now()-t0 > 30*60e3) clearInterval(tick); }, 15000);
 }
 
@@ -1208,7 +1210,7 @@ function wireCards(){
       const base = {status:"decided", decided_by:S.user.email, decided_at:now, updated_at:now, chosen:o, suggestion:o.label};
       const patch = o.action==="WAIT_COUNT" ? {...base, choice:"wait_count"}
         : o.action==="CREATED" ? {...base, choice:"created"}
-        : o.action==="KEEP" ? {...base, choice:"reject"}
+        : (o.action==="KEEP" || o.action==="LEAVE") ? {...base, choice:"reject"}   // LEAVE: Dave 11/24, every sales card
         : o.action==="WRITE_IN" ? {...base, choice:"other", other_text:o.text}
         : {...base, choice:"approve", target:o.target||null, target_type:o.type||null, delta_oz:o.pour_oz??null};
       row.querySelectorAll("button").forEach(x=>x.disabled=true);
@@ -1218,6 +1220,7 @@ function wireCards(){
       else toast(o.action==="WAIT_COUNT" ? "Parked until the count. The after-count pass maps it."
         : o.action==="CREATED" ? "Got it. The next pass maps it to the product you set up."
         : o.action==="KEEP" ? "Kept as it is. The robot won't ask about it again."
+        : o.action==="LEAVE" ? "Left unmapped. The robot won't ask about it again."
         : o.action==="WRITE_IN" ? "Saved. Claude reads it on the next pass." : `Chosen: ${o.label}. The next pass writes it (or press "Write approved items to Pilot now").`);
       Object.assign(it, patch); loadMapping().catch(()=>{}).then(render);
     });
