@@ -385,17 +385,20 @@ function signInScreen(err){
 function render(){
   if (!S.user) return;
   const v = S.view;
+  const keepY = window.scrollY;                       // the 60-second refresh must not move the page (Dave 11/24)
   $("#app").innerHTML = `<header><h1>Barmetrix Command Center</h1>
     <nav>${[["clients","Clients"],["computers","Computers"],["mapping",`Mapping${openTotal()?` <span class="tag amber">${openTotal()}</span>`:""}`],["dbreview",`Database review${dbOpenTotal()?` <span class="tag amber">${dbOpenTotal()}</span>`:""}`],["queue","Run queue"],["history","Pull history"],["changes",`Changes${chNew()&&chSeen()?` <span class="tag blue">${chNew()}</span>`:""}`]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
     <div class="who"><span>${esc(S.user.email)}</span><button class="b" id="out" title="Signed in as ${esc(S.user.email)}">Sign out</button></div></header>
     <main id="main"></main>`;
-  // the frozen client bar sits right under the top bar, whatever height the top bar is
+  document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); if(S.view==="mapping") await loadMapping().catch(e=>toast(e.message)); if(S.view==="dbreview") await loadDb().catch(e=>toast(e.message)); if(S.view==="changes") await loadChanges().catch(e=>toast(e.message)); render(); window.scrollTo(0,0); });
+  $("#out").onclick = ()=>sb.auth.signOut();
+  if (v==="clients") renderClients(); else if (v==="computers") renderComputers(); else if (v==="mapping") renderMapping(); else if (v==="dbreview") renderDb(); else if (v==="queue") renderQueue(); else if (v==="changes") renderChanges(); else renderHistory();
+  // measure the top bar only AFTER the page is back: measuring it while the page was empty snapped the
+  // browser to the top on every refresh. The frozen client bar sits right under the top bar.
   const hd = document.querySelector("header");
   const setH = ()=>document.documentElement.style.setProperty("--hdr", hd.offsetHeight+"px");
   setH(); if (window.ResizeObserver) new ResizeObserver(setH).observe(hd);
-  document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); if(S.view==="mapping") await loadMapping().catch(e=>toast(e.message)); if(S.view==="dbreview") await loadDb().catch(e=>toast(e.message)); if(S.view==="changes") await loadChanges().catch(e=>toast(e.message)); render(); });
-  $("#out").onclick = ()=>sb.auth.signOut();
-  if (v==="clients") renderClients(); else if (v==="computers") renderComputers(); else if (v==="mapping") renderMapping(); else if (v==="dbreview") renderDb(); else if (v==="queue") renderQueue(); else if (v==="changes") renderChanges(); else renderHistory();
+  if (window.scrollY !== keepY) window.scrollTo(0, keepY);
 }
 
 /* ---------- Computers: who maps what (Dave 11/18: "I can not see how to set clients to a machine. Let's put this
