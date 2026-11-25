@@ -1203,7 +1203,7 @@ function renderClientAudit(){
         <select id="maudit" style="max-width:220px" aria-label="Audit">${audits.map(a=>`<option value="${a}" ${a===c.audit?"selected":""}>Audit ${esc(fmtShort(a))}</option>`).join("")}
           ${c.audit===null?'<option value="" selected>No audit date</option>':""}<option value="all" ${c.audit==="all"?"selected":""}>All audits</option></select>
       </div>
-      ${openBanner(open.length, waiting.length, writeNowBar(cl, c, it) + (unwritten.length && !busy ? `<button class="b" id="mclear" title="Use this when you've mapped or trashed them yourself in Pilot. They move to Done as 'done by hand in Pilot' and the robot won't write them.">I mapped these in Pilot myself</button>` : ""))}
+      ${openBanner(open.length, waiting.length, acceptBar(cl, c, open, busy) + writeNowBar(cl, c, it) + (unwritten.length && !busy ? `<button class="b" id="mclear" title="Use this when you've mapped or trashed them yourself in Pilot. They move to Done as 'done by hand in Pilot' and the robot won't write them.">I mapped these in Pilot myself</button>` : ""))}
       <div class="tabs">${tabs.map(([k,l,n])=>`<button data-mt="${k}" class="${M.tab===k?"on":""}">${l} (${n})${k==="open"&&n?' <span class="tag red">'+n+'</span>':""}</button>`).join("")}</div>
     </div>
     ${cl?"":`<div class="msg info">These items came from a Pilot venue name that doesn't match a client in the Clients tab. They still work; Claude links them on the next run.</div>`}
@@ -1218,6 +1218,8 @@ function renderClientAudit(){
                        : `Write ${n} approved item${n>1?"s":""} into Pilot now?`)
       + `\n\nPilot on ${mc} is in use while it writes (about a minute, plus 15 seconds per item). Make sure nobody is in the middle of something in Pilot on that computer.`;
     if (confirm(msg)) writeNow(cl, c, e.currentTarget); });
+  $("#macc")?.addEventListener("click", e=>acceptRobot(cl, c, open, false, e.currentTarget));
+  $("#maccw")?.addEventListener("click", e=>acceptRobot(cl, c, open, true, e.currentTarget));
   $("#mclear")?.addEventListener("click", async e=>{
     const n = k => unwritten.filter(i=>i.status===k).length, parts = [];
     if (n("open")) parts.push(`${n("open")} open question${n("open")>1?"s":""}`);
@@ -1271,6 +1273,44 @@ function writeNowBar(cl, c, it){
   const n = it.filter(i=>i.status==="decided" && !["reject","wait_count","created"].includes(i.choice)).length;
   if (!n) return "";
   return `<button class="b primary" id="mwrite" data-n="${n}" title="Writes the approved answers into Pilot on ${esc(cl.map_machine||"the mapping computer")} now, instead of waiting for the next pass">Write ${n} approved to Pilot</button>`;
+}
+/* Dave 11/25: when the robot DECIDED a line but couldn't get into Pilot (an AVG window covered it all night), those cards
+   never needed him. Two buttons accept every one of them at once - the robot's own answer, nothing else. Real
+   questions (not sure, not set up, client recipe) are never touched. */
+const ROBOT_DECIDED = /^Problem: Decided, (but Pilot didn't take it|not entered in Pilot yet)/;
+const ROBOT_ACTIONS = ["MAP", "TRASH", "BUILD_AND_MAP"];
+function robotAnswered(open){
+  return open.filter(i=>ROBOT_DECIDED.test(i.reason||"") && ROBOT_ACTIONS.includes(((i.options||[])[0]||{}).action));
+}
+function acceptBar(cl, c, open, busy){
+  const n = robotAnswered(open).length;
+  if (!n || busy) return "";
+  return `<button class="b" id="macc" title="Approves the robot's own answer on every card it decided but couldn't enter in Pilot. Real questions stay open.">Accept the robot's ${n} answer${n>1?"s":""}</button>`
+    + (cl && c.audit && c.audit!=="all" ? `<button class="b primary" id="maccw" title="Same, then writes them into Pilot on ${esc(cl.map_machine||"the mapping computer")} now">Accept ${n} and write to Pilot now</button>` : "");
+}
+async function acceptRobot(cl, c, open, writeAfter, btn){
+  const items = robotAnswered(open), n = items.length;
+  if (!n) return;
+  const mc = (cl && cl.map_machine) || "the mapping computer";
+  const msg = `Accept the robot's answer on ${n} card${n>1?"s":""} it decided but couldn't enter in Pilot?\n\nOnly those cards. Questions that need a person stay open.`
+    + (writeAfter ? `\n\nThen write them into Pilot on ${mc} now. Pilot on that computer is in use while it writes (about a minute, plus 15 seconds per item). Make sure nobody is in the middle of something in Pilot there.`
+                  : `\n\nThey go into Pilot on the robot's next pass, or when you press "Write approved to Pilot".`);
+  if (!confirm(msg)) return;
+  if (writeAfter && !(cl && cl.map_machine)){ toast("This client has no mapping computer yet (Clients tab → client → Mapping)."); return; }
+  btn.disabled = true;
+  const now = new Date().toISOString(); let ok = 0;
+  for (const i of items){
+    const o = i.options[0];
+    const r = await sb.from("mapping_items").update({status:"decided", choice:"approve", chosen:o, suggestion:o.label,
+      target:o.target||null, target_type:o.type||null, delta_oz:o.pour_oz??null, decided_by:S.user.email, decided_at:now, updated_at:now})
+      .eq("id", i.id).eq("status","open").select("id");
+    if (r.error){ toast("Stopped: "+r.error.message); break; }
+    ok += r.data.length;
+  }
+  toast(`Accepted ${ok} of the robot's answers.`);
+  await refresh(true);
+  if (M.client) { await loadClientItems().catch(()=>{}); renderClientAudit(); }
+  if (writeAfter && ok) writeNow(cl, c, $("#mwrite") || btn);
 }
 function lastWriteLine(cl, c){
   if (!cl || !c.audit || c.audit==="all") return "";
