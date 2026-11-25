@@ -281,10 +281,12 @@ function jobLine(j){
     imported:'<span class="tag green">Imported</span>', held:'<span class="tag red">Import held</span>', failed:'<span class="tag red">Import failed</span>'}[j.import_status]||"";
   return `${esc(PASS[j.pass]||j.pass)} ${st} ${imp}`;
 }
-async function mapNow(c, day, btn){
+async function mapNow(c, day, btn, pass_){
   if (!c.map_machine){ toast("Choose a mapping machine for this client first (Clients tab → client → Mapping)."); return; }
   if (btn) btn.disabled = true;
-  const r = await sb.from("map_jobs").insert({client_id:c.id, machine:c.map_machine, pass:"manual", requested_by:S.user.email, audit_date:day||null}).select("id");
+  const row = {client_id:c.id, machine:c.map_machine, pass:"manual", requested_by:S.user.email, audit_date:day||null};
+  if (pass_) row.detail = {kind:"map", pass:pass_};   // Dave 11/25: the after-count pass runs ONLY from this button
+  const r = await sb.from("map_jobs").insert(row).select("id");
   if (r.error){ toast("Not queued: "+r.error.message); if (btn) btn.disabled=false; return; }
   toast(`Queued on ${c.map_machine}. It starts within a few minutes.`); await refresh(true);
 }
@@ -1095,7 +1097,7 @@ function dashCard(x, today){
       ${row("Mapped by the robot", t.robot, "green")}
       ${row("Done", t.done, "green")}
     </div>
-    <div class="act">${waitJob?`<button class="b primary" data-imp="${esc(waitJob.id)}">Import now</button>`:""}${canAfter?`<button class="b" data-aftercount="${esc(x.cid)}" title="The robot also starts this on its own when it sees the count in Pilot">Count is in: run after-count map</button>`:""}</div>
+    <div class="act">${waitJob?`<button class="b primary" data-imp="${esc(waitJob.id)}">Import now</button>`:""}${canAfter?`<button class="b" data-aftercount="${esc(x.cid)}" title="The robot never starts this on its own - only this button does">Count is in: run after-count map</button>`:""}</div>
   </div>`;
 }
 function renderMapping(){
@@ -1140,8 +1142,8 @@ function renderMapping(){
     b.onclick = go; b.onkeydown = e=>{ if (e.target===b && (e.key==="Enter"||e.key===" ")){ e.preventDefault(); go(); } }; });
   // Dave 11/24: no blind "Map now" on the board - the only run button is "the count is in", and it asks first
   document.querySelectorAll("[data-aftercount]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); const c = clientOf(b.dataset.aftercount);
-    if (!confirm(`Run the after-count map for ${c.client_display_name} now?\n\nUse this once the count is in Pilot. The robot on ${c.map_machine} writes the answers already given, maps against the count and imports. Open questions stay open.\n\nIf Pilot doesn't have the count yet, it runs a main map instead.`)) return;
-    mapNow(c, M.day, b); });
+    if (!confirm(`Run the after-count map for ${c.client_display_name} now?\n\nThe robot on ${c.map_machine} writes the answers already given, maps against the count and imports the sales, then maps and books today's invoices. Open questions stay open.`)) return;
+    mapNow(c, M.day, b, "after_count"); });
   document.querySelectorAll("[data-imp]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); releaseImport(S.jobs.find(j=>j.id===b.dataset.imp), b); });
   $("#mmach")?.addEventListener("click", openMachines);
   document.querySelectorAll("[data-ec]").forEach(b=>b.onclick=()=>openClient(b.dataset.ec||null, b.dataset.ev, b.dataset.ea||null));
