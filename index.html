@@ -393,7 +393,7 @@ function render(){
     <nav>${[["clients","Clients"],["computers","Computers"],["mapping",`Mapping${openTotal()?` <span class="tag amber">${openTotal()}</span>`:""}`],["dbreview",`Database review${dbOpenTotal()?` <span class="tag amber">${dbOpenTotal()}</span>`:""}`],["queue","Run queue"],["history","Pull history"],["changes",`Changes${chNew()&&chSeen()?` <span class="tag blue">${chNew()}</span>`:""}`]].map(([k,l])=>`<button data-v="${k}" class="${v===k?"on":""}">${l}</button>`).join("")}</nav>
     <div class="who"><span>${esc(S.user.email)}</span><button class="b" id="out" title="Signed in as ${esc(S.user.email)}">Sign out</button></div></header>
     <main id="main"></main>`;
-  document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); if(S.view==="mapping") await loadMapping().catch(e=>toast(e.message)); if(S.view==="dbreview") await loadDb().catch(e=>toast(e.message)); if(S.view==="changes") await loadChanges().catch(e=>toast(e.message)); render(); window.scrollTo(0,0); });
+  document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{ S.view=b.dataset.v; if(S.view==="computers") CM.machine=null; if(S.view==="history") await loadPulls().catch(e=>toast(e.message)); if(S.view==="mapping") await loadMapping().catch(e=>toast(e.message)); if(S.view==="dbreview") await loadDb().catch(e=>toast(e.message)); if(S.view==="changes") await loadChanges().catch(e=>toast(e.message)); render(); window.scrollTo(0,0); });
   $("#out").onclick = ()=>sb.auth.signOut();
   if (v==="clients") renderClients(); else if (v==="computers") renderComputers(); else if (v==="mapping") renderMapping(); else if (v==="dbreview") renderDb(); else if (v==="queue") renderQueue(); else if (v==="changes") renderChanges(); else renderHistory();
   // measure the top bar only AFTER the page is back: measuring it while the page was empty snapped the
@@ -459,8 +459,67 @@ function holdNote(m, c){
   });
   return notes.sort((a,b)=>a.rank-b.rank)[0];
 }
+/* One computer's page (Dave 11/27): "I click on a computer name and then it shows me what clients are on that computer
+   on a given day and then I can change the order." Order = clients.map_order: 1 is mapped and written in Pilot first.
+   The robot only compares numbers between clients on the same computer, so each page numbers its own list 1, 2, 3. */
+function renderMachineOrder(){
+  const m = (S.machines||[]).find(x=>x.name===CM.machine);
+  if (!m){ CM.machine = null; return renderComputers(); }
+  const day = CM.day || addDays(todayISO(),1);
+  // one entry per Command Center row (the run order is the row's); a shared login shows its Pilot clients on this computer
+  const rows = [];
+  S.clients.filter(c=>c.status==="active" && !partOf(c)).forEach(c=>{
+    const names = PILOT_CLIENTS_OF[c.client_display_name] ? PILOT_CLIENTS_OF[c.client_display_name].filter(p=>viewOf(c,p).map_machine===m.name)
+                : (c.map_machine===m.name ? [c.client_display_name] : []);
+    if (!names.length) return;
+    const due = c.next_due_date===day || c.last_pulled_date===day;
+    const anyOn = PILOT_CLIENTS_OF[c.client_display_name] ? names.some(p=>viewOf(c,p).map_enabled) : !!c.map_enabled;
+    rows.push({c, names, due, on:anyOn});
+  });
+  const byOrder = (a,b)=>((a.c.map_order??999)-(b.c.map_order??999)) || a.names[0].localeCompare(b.names[0], "en", {sensitivity:"base"});
+  const list = rows.filter(r=>r.due).sort(byOrder);
+  const rest = rows.filter(r=>!r.due).sort((a,b)=>a.names[0].localeCompare(b.names[0], "en", {sensitivity:"base"}));
+  const nm = r => r.names.join(" + ");
+  const line = (r,k) => `<tr style="cursor:default">
+      <td style="width:60px;font-size:18px;font-weight:700;text-align:center">${k+1}</td>
+      <td><b>${esc(nm(r))}</b>${PILOT_CLIENTS_OF[r.c.client_display_name]?`<div class="small muted">Shares a Toast login: ${esc(r.c.client_display_name)}</div>`:""}</td>
+      <td>${r.on?'<span class="tag green">Robot on</span>':'<span class="tag">Robot off</span>'}</td>
+      <td style="white-space:nowrap"><button class="b sm" data-up="${k}" ${k===0?"disabled":""} aria-label="Move up">▲ Up</button>
+        <button class="b sm" data-dn="${k}" ${k===list.length-1?"disabled":""} aria-label="Move down">▼ Down</button></td></tr>`;
+  $("#main").innerHTML = `
+    <div class="bar" style="align-items:center"><button class="b" id="cmback">‹ All computers</button>
+      <h2 style="margin:0;font-size:22px">${esc(shortName(m.name))} — run order</h2></div>
+    <div class="bar" style="align-items:center">
+      <button class="b" id="cdp" aria-label="Previous day">‹</button>
+      <b style="min-width:230px;text-align:center">${esc(fmtLong(day))}</b>
+      <button class="b" id="cdn" aria-label="Next day">›</button>
+      <button class="b" id="cdt">Tomorrow</button>
+      <span class="muted small">1 is mapped and written in Pilot first, then 2, then 3.</span></div>
+    <div class="tablewrap"><table style="min-width:560px"><thead><tr><th>Order</th><th>Client</th><th>Robot</th><th>Move</th></tr></thead>
+      <tbody>${list.map(line).join("") || `<tr><td colspan="4" class="muted">No audits on ${esc(shortName(m.name))} this day.</td></tr>`}</tbody></table></div>
+    <p class="small muted" style="margin-top:16px">Also on ${esc(shortName(m.name))}, not auditing this day: ${rest.map(r=>esc(nm(r))).join(", ") || "none"}.</p>`;
+  $("#cmback").onclick = ()=>{ CM.machine = null; renderComputers(); };
+  const go = n => { CM.day = addDays(day, n); renderMachineOrder(); };
+  $("#cdp").onclick = ()=>go(-1); $("#cdn").onclick = ()=>go(1);
+  $("#cdt").onclick = ()=>{ CM.day = addDays(todayISO(),1); renderMachineOrder(); };
+  const move = async (k, d, btn) => {
+    const order = list.slice(); const [x] = order.splice(k,1); order.splice(k+d, 0, x);
+    document.querySelectorAll("[data-up],[data-dn]").forEach(b=>b.disabled=true);
+    // number this day's list 1..n on this computer; only rows whose number changes are saved
+    for (let i=0; i<order.length; i++){
+      const c = order[i].c; if (c.map_order===i+1) continue;
+      const r = await sb.from("clients").update({map_order:i+1}).eq("id",c.id).select("id");
+      if (r.error || !r.data?.length){ toast("Not saved: "+(r.error?.message||"no permission")); renderMachineOrder(); return; }
+      c.map_order = i+1;
+    }
+    toast(`${nm(x)} is now number ${k+d+1} on ${shortName(m.name)}.`); renderMachineOrder();
+  };
+  document.querySelectorAll("[data-up]").forEach(b=>b.onclick=()=>move(+b.dataset.up, -1, b));
+  document.querySelectorAll("[data-dn]").forEach(b=>b.onclick=()=>move(+b.dataset.dn, 1, b));
+}
 function renderComputers(){
   if (!S.hasMapCols){ $("#main").innerHTML = `<div class="msg info">Mapping isn't switched on in the database yet.</div>`; return; }
+  if (CM.machine) return renderMachineOrder();
   const ms = (S.machines||[]).slice().sort((a,b)=>a.name.localeCompare(b.name));
   const tom = addDays(todayISO(),1);
   // a shared-login row becomes one row per Pilot client (Cosanostra, El Cuban Diner)
@@ -486,7 +545,8 @@ function renderComputers(){
         <span class="tag ${on?"green":"red"}">${on?"On":"Off — not checking in"}</span>${claude}</div>
       <div class="small muted" style="margin-top:6px">Last seen ${esc(ago(m.last_checkin))} · Pilot ${m.pilot_running===true||String(m.pilot_running)==="True"?"open":"closed"} · robot ${esc(ver)}</div>
       <select data-mk="${esc(m.name)}" style="margin-top:8px;max-width:230px"><option value="audit" ${m.kind==="audit"?"selected":""}>Audit machine (maps clients)</option><option value="desk" ${m.kind!=="audit"?"selected":""}>Desk machine (never maps)</option></select>
-      <div style="margin-top:6px"><b>${n}</b> client${n===1?"":"s"} · robot on for <b>${non}</b>${nt?` · <b>${nt}</b> tomorrow`:""}</div></div>`;
+      <div style="margin-top:6px"><b>${n}</b> client${n===1?"":"s"} · robot on for <b>${non}</b>${nt?` · <b>${nt}</b> tomorrow`:""}</div>
+      <button class="b sm primary" data-open-m="${esc(m.name)}" style="margin-top:8px">Clients and run order ›</button></div>`;
   };
   const row = c => {
     const head = "";
@@ -518,6 +578,7 @@ function renderComputers(){
       <span class="muted small">Click a computer to choose who maps the client. The switch turns the robot on or off for that client.</span></div>
     <div class="tablewrap"><table style="min-width:760px"><thead><tr><th>Client</th><th>Next audit</th><th>Robot</th><th>Mapped on</th></tr></thead>
       <tbody>${rows.map(row).join("") || '<tr><td colspan="4" class="muted">No clients.</td></tr>'}</tbody></table></div>`;
+  document.querySelectorAll("[data-open-m]").forEach(b=>b.onclick=()=>{ CM.machine = b.dataset.openM; CM.day = addDays(todayISO(),1); renderMachineOrder(); window.scrollTo(0,0); });
   const q = $("#cmq"); q.oninput = ()=>{ CM.q = q.value; const pos = q.selectionStart; renderComputers(); const n=$("#cmq"); n.focus(); n.setSelectionRange(pos,pos); };
   const rowOf = b => live.find(x=>x.id===b.dataset.c && (x._pilot||"")===(b.dataset.p||""));
   document.querySelectorAll("[data-pick]").forEach(b=>b.onclick=async()=>{
@@ -933,12 +994,15 @@ function libCard(i){
   const price = (line.match(/\$[\d,.]+ a sale/)||[""])[0];
   const tag = i.kind==="invoice" ? `<span class="tag">INVOICE</span> ` : mod ? `<span class="tag amber">MODIFIER</span> ` : menu ? `<span class="tag blue">MENU ITEM</span> ` : "";
   const prob = all.find(x=>x[0]==="Problem"||x[0]==="Issue");
-  const b = all.filter(x=>x!==prob).map(([k,v])=>[k, LINE_LABELS.includes(k) ? v.replace(/^(Modifier|Menu item)(, \$[\d,.]+ a sale)?/,"").replace(/^\s*·\s*/,"") : v])
+  /* Dave 11/27: "The POS line just says how many were rung in and that's pointless ... what you had there before was
+     better." Before 11/23 the line read "Menu item, $15.00 a sale": what the button is and what it sells for. That is
+     back; the "sold N" count is dropped. (The price is on this line again, so the header keeps only the tag.) */
+  const b = all.filter(x=>x!==prob).map(([k,v])=>[k, LINE_LABELS.includes(k) ? v.replace(/\s*·\s*sold [\d,.]+\s*$/,"").replace(/^sold [\d,.]+$/,"") : v])
                .filter(([k,v])=>!(LINE_LABELS.includes(k) && !v.trim()));
   const opts = Array.isArray(i.options) ? i.options : [];
   const other = M.other===i.id;
   return `<div class="row ${mod?"mod":menu?"menu":""}" data-id="${esc(i.id)}" style="flex-direction:column;gap:10px">
-    <p style="margin:0">${tag}<b>${esc(i.title)}</b>${price?` <span class="muted small">· ${esc(price)}</span>`:""}</p>
+    <p style="margin:0">${tag}<b>${esc(i.title)}</b></p>
     ${prob?`<p style="margin:0;font-weight:700;color:#9b1c1c">${esc(prob[1])}</p>`:""}
     <ul class="small" style="margin:0;padding-left:18px;white-space:normal">${b.map(([k,v])=>`<li>${k?`<b>${esc(k)}:</b> `:""}${libMark(v)}</li>`).join("")}</ul>
     <div style="display:flex;flex-direction:column;gap:8px;align-items:stretch">
@@ -1202,6 +1266,13 @@ function renderClientAudit(){
   // Dave 11/24: "I mapped these myself" works in every situation - open questions AND answers not written yet
   const unwritten = it.filter(i=>["open","decided","failed"].includes(i.status));
   const busy = cl && c.audit && c.audit!=="all" && writeJob(cl, c.audit);
+  /* Dave 11/27: "you do not have a Finish Mapping once I ask it to wait for a count". Cards parked with "Wait for the
+     count" get one button: the count is in -> the after-count pass maps them, then imports. */
+  const parked = it.filter(i=>i.status==="decided" && i.choice==="wait_count");
+  const finJob = cl && c.audit && S.jobs.find(j=>j.client_id===cl.id && j.audit_date===c.audit && (j.detail||{}).pass==="after_count" && ["queued","running"].includes(j.status));
+  const finBtn = !parked.length || !cl || !c.audit || c.audit==="all" ? ""
+    : finJob ? `<span class="tag blue">Finishing the mapping on ${esc(shortName(finJob.machine||cl.map_machine||""))}${finJob.status==="queued"?" — waiting to start":" now"}</span>`
+    : `<button class="b primary" id="mfin" title="The count is in: the robot maps the ${parked.length} card(s) waiting for the count, then imports">Finish mapping (${parked.length} waiting for the count)</button>`;
   $("#main").innerHTML = `
     <div class="chead">
       <div class="row1">
@@ -1212,7 +1283,7 @@ function renderClientAudit(){
         <select id="maudit" style="max-width:220px" aria-label="Audit">${audits.map(a=>`<option value="${a}" ${a===c.audit?"selected":""}>Audit ${esc(fmtShort(a))}</option>`).join("")}
           ${c.audit===null?'<option value="" selected>No audit date</option>':""}<option value="all" ${c.audit==="all"?"selected":""}>All audits</option></select>
       </div>
-      ${openBanner(open.length, waiting.length, acceptBar(cl, c, open, busy) + writeNowBar(cl, c, it) + (unwritten.length && !busy ? `<button class="b" id="mclear" title="Use this when you've mapped or trashed them yourself in Pilot. They move to Done as 'done by hand in Pilot' and the robot won't write them.">I mapped these in Pilot myself</button>` : ""))}
+      ${openBanner(open.length, waiting.length, finBtn + acceptBar(cl, c, open, busy) + writeNowBar(cl, c, it) + (unwritten.length && !busy ? `<button class="b" id="mclear" title="Use this when you've mapped or trashed them yourself in Pilot. They move to Done as 'done by hand in Pilot' and the robot won't write them.">I mapped these in Pilot myself</button>` : ""))}
       <div class="tabs">${tabs.map(([k,l,n])=>`<button data-mt="${k}" class="${M.tab===k?"on":""}">${l} (${n})${k==="open"&&n?' <span class="tag red">'+n+'</span>':""}</button>`).join("")}</div>
     </div>
     ${cl?"":`<div class="msg info">These items came from a Pilot venue name that doesn't match a client in the Clients tab. They still work; Claude links them on the next run.</div>`}
@@ -1227,6 +1298,12 @@ function renderClientAudit(){
                        : `Write ${n} approved item${n>1?"s":""} into Pilot now?`)
       + `\n\nPilot on ${mc} is in use while it writes (about a minute, plus 15 seconds per item). Make sure nobody is in the middle of something in Pilot on that computer.`;
     if (confirm(msg)) writeNow(cl, c, e.currentTarget); });
+  $("#mfin")?.addEventListener("click", async e=>{
+    if (!cl.map_enabled){ toast(`The robot is switched off for ${name} (Computers tab).`); return; }
+    if (!confirm(`Finish the mapping for ${name} now?\n\nUse this once the count is in. The robot on ${shortName(cl.map_machine||"")} maps the ${parked.length} card(s) waiting for the count, writes any answers already given, and imports the sales. Open questions stay open.\n\nPilot on that computer is in use while it runs. Make sure nobody is in the middle of something in Pilot there.`)) return;
+    await mapNow(cl, c.audit, e.currentTarget, "after_count");
+    if (M.client) renderClientAudit();
+  });
   $("#macc")?.addEventListener("click", e=>acceptRobot(cl, c, open, false, e.currentTarget));
   $("#maccw")?.addEventListener("click", e=>acceptRobot(cl, c, open, true, e.currentTarget));
   $("#mclear")?.addEventListener("click", async e=>{
@@ -1558,18 +1635,10 @@ const CL_COLS = [
   ["fintech","Fintech", c=>hasFintech(c)?(c.fintech_last_pull_status||""):""],
   ["toast","Toast data", c=>c.source_system==="toast"?(c.toast_data_delay||""):""],
   ["status","Status", c=>(STATUSES.find(s=>s[0]===(c.status||"").toLowerCase())||[0,c.status||""])[1]],
-  ["order","Run order", c=>c.map_order==null?"":String(c.map_order).padStart(3,"0")],
   ["map","Mapping", c=>(c.map_enabled?"a ":"b ")+(c.map_machine||"")],
 ];
-const clCols = () => CL_COLS.filter(c=>c[0]!=="order" || S.hasOrderCol);
-// Run order (Dave 11/16): 1st, 2nd, 3rd ... - who the robot writes in Pilot first when files land together.
-const orderCell = c => `<input class="ord" type="number" min="1" max="99" data-ord="${esc(c.id)}" value="${c.map_order??""}" placeholder="—" title="Run order: 1 = written in Pilot first. Blank = after the numbered ones.">`;
-async function setOrder(c, v, el){
-  const n = v==="" ? null : Math.max(1, Math.min(99, parseInt(v,10)||0)) || null;
-  const r = await sb.from("clients").update({map_order:n}).eq("id",c.id).select("id");
-  if (r.error || !r.data?.length){ toast("Not saved: "+(r.error?.message||"no permission")); el.value = c.map_order??""; return; }
-  c.map_order = n; toast(`${c.client_display_name}: run order ${n??"blank"}`);
-}
+// Dave 11/27: run order moved off the Clients tab (a setup screen only) to Computers -> one computer's page
+const clCols = () => CL_COLS;
 // THE master switch (Dave 11/16: "an easier way to turn all venues off that does not take a 1 by 1 to turn them back on")
 const masterBar = () => {
   if (!S.master) return "";
@@ -1585,10 +1654,11 @@ async function setMaster(on){
   if (r.error || !r.data?.length){ toast("Not saved: "+(r.error?.message||"no permission")); return; }
   S.master = {on, by:S.user.email, at:new Date().toISOString()}; toast(`Robot mapping ${on?"ON":"OFF"} for all clients`); render();
 }
-// Mapping column: the on/off switch and "Finish mapping" right on the list (Dave 11/15: "WAY too buried")
+// Mapping column: the on/off switch (Dave 11/15: "WAY too buried"). No run button here - Dave 11/27: the Clients tab
+// is a set-up screen only; Finish mapping lives on the Mapping tab.
 const mapCell = c => !S.hasMapCols ? '<span class="muted">—</span>' : `<span class="mapcell">
   <button class="sw ${c.map_enabled?"on":""}" data-sw="${esc(c.id)}" title="${c.map_enabled?"Mapping ON: the robot maps every audit. Click to turn off.":"Mapping OFF. Click to turn on."}"><i></i>${c.map_enabled?"On":"Off"}</button>
-  ${c.map_machine?`<span class="small muted">${esc(c.map_machine.replace(/^MIAMI-/,""))}</span><button class="b sm" data-fin="${esc(c.id)}" title="Run the mapping now on ${esc(c.map_machine)} - for after the client's files arrive">Finish mapping</button>`:'<span class="small muted">no computer</span>'}</span>`;
+  ${c.map_machine?`<span class="small muted">${esc(c.map_machine.replace(/^MIAMI-/,""))}</span>`:'<span class="small muted">no computer</span>'}</span>`;
 async function setMapOn(c, on, btn){
   if (on && !c.map_machine){ toast("Pick the computer that maps this client first (open the client → Mapping)."); return; }
   btn.disabled = true;
@@ -1638,13 +1708,9 @@ function renderClients(){
         <td>${hasFintech(c)?statusTag(c.fintech_last_pull_status):'<span class="tag">—</span>'}</td>
         <td>${c.source_system!=="toast"||!c.toast_data_delay?'<span class="muted">—</span>':c.toast_data_delay==="delayed"?`<span class="tag blue">Delay · ${esc(c.toast_data_delay_last_update||"?")}</span>`:c.toast_data_delay==="realtime"?'<span class="tag green">Current</span>':'<span class="tag">Unknown</span>'}</td>
         <td>${esc((STATUSES.find(s=>s[0]===(c.status||"").toLowerCase())||[0,c.status])[1])}</td>
-        ${S.hasOrderCol?`<td>${orderCell(c)}</td>`:""}
         <td>${mapCell(c)}</td></tr>`).join("");
-    document.querySelectorAll("[data-ord]").forEach(el=>{ el.onclick=e=>e.stopPropagation();
-      el.onchange=()=>setOrder(S.clients.find(x=>x.id===el.dataset.ord), el.value.trim(), el); });
     document.querySelectorAll("#rows tr").forEach(tr=>tr.onclick=()=>openEditor(S.clients.find(c=>c.id===tr.dataset.id)));
     document.querySelectorAll("[data-sw]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); const c = S.clients.find(x=>x.id===b.dataset.sw); setMapOn(c, !c.map_enabled, b); });
-    document.querySelectorAll("[data-fin]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); mapNow(S.clients.find(x=>x.id===b.dataset.fin), null, b); });
   };
   draw(); $("#q").oninput = draw;
   document.querySelectorAll("th.sortable").forEach(th=>th.onclick=()=>{
