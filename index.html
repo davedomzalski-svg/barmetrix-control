@@ -147,7 +147,7 @@ nav button{white-space:nowrap}
 .dash .mach{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.03em;white-space:nowrap}
 .dash .pos{margin-bottom:10px}
 .dash .big{font-size:20px;font-weight:600;line-height:1.2;margin-bottom:2px}
-.dash .big.red{color:var(--red)} .dash .big.green{color:var(--green)} .dash .big.grey{color:var(--muted);font-size:16px;font-weight:500}
+.dash .big.red{color:var(--red)} .dash .big.green{color:var(--green)} .dash .big.amber{color:var(--amber)} .dash .big.grey{color:var(--muted);font-size:16px;font-weight:500}
 .dash .sec{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600;margin:12px 0 5px;width:100%;border-top:1px solid var(--line);padding-top:8px}
 .dash .steps{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:13px}
 .dash .steps span{white-space:nowrap}
@@ -866,7 +866,7 @@ function statusLine(cid, day, big){
     const p = (r.detail||{}).passes||{}, multi = rows.length>1;
     const step = (ok, label, sub) => `<span class="tag ${ok?"green":""}" title="${esc(sub||"")}">${ok?"✓ ":""}${esc(label)}</span>`;
     const now = r.state==="running" ? `<span class="tag blue">Mapping now on ${esc(r.machine)} · ${esc({premap:"pre-map",main:"main map",after_count:"after the count"}[r.pass]||r.pass)}</span>`
-      : r.state==="waiting_pilot" ? `<span class="tag amber">Waiting: Pilot is open on ${esc(r.machine)}</span>`
+      : r.state==="waiting_pilot" ? `<span class="tag amber" title="${esc(r.summary||"")}">Not written yet · waiting to use Pilot on ${esc(r.machine)}</span>`
       : r.state==="failed" ? `<span class="tag red" title="${esc(r.summary||"")}">Last pass failed</span>` : "";
     const wait = [r.waiting_client?`<span class="tag amber">${r.waiting_client} waiting on the client</span>`:"",
                   r.waiting_count?`<span class="tag blue">${r.waiting_count} waiting on the count</span>`:"",
@@ -1047,6 +1047,8 @@ function dayCards(day){
 
 /* everything not in Pilot yet: open questions, answers not written yet, answers Pilot didn't take */
 const unmappedOf = t => t.open + t.failed + t.waiting;
+/* a pass that decided lines but hasn't written them (waiting for Pilot, still running, or failed) - Dave 11/27 */
+const unwrittenOn = day => (M.status||[]).some(r=>r.audit_date===day && ["waiting_pilot","running","failed"].includes(r.state));
 /* Dave 11/24 ("word salad"): one card per audit, the same rows in the same places on every card.
    Name + machine; the headline count of what isn't mapped; progress; the last pass; the breakdown; one action. */
 function dashCard(x, today){
@@ -1067,13 +1069,18 @@ function dashCard(x, today){
   const last = rows.slice().sort((a,b)=>String(b.finished_at||b.started_at).localeCompare(String(a.finished_at||a.started_at)))[0];
   const pass = run ? ["blue", `Running now: ${PN[run.pass]||run.pass}`]
     : live ? ["blue", live.status==="queued" ? `Queued: ${(live.detail||{}).kind==="apply"?"writing approved items":"map"}` : `Running now: ${(live.detail||{}).kind==="apply"?"writing approved items":"map"}`]
-    : wp ? ["amber", `Waiting: Pilot is open on ${shortName(wp.machine)}`]
+    : wp ? ["amber", `Not written yet · waiting to use Pilot on ${shortName(wp.machine)}`, wp.summary]
     : fl ? ["red", `Failed · ${PN[fl.pass]||fl.pass||"pass"} · ${tm(fl.finished_at||fl.started_at)}`, fl.summary]
     : last ? ["green", `Succeeded · ${PN[last.pass]||last.pass||"pass"} · ${tm(last.finished_at||last.started_at)}`, last.summary]
     : ["grey", M.day>today ? "Audit not done yet" : "No pass yet"];
   const sum = k => Math.min(t.open, rows.reduce((a,r)=>a+(r[k]||0),0));
   const row = (label, n, cls, sub) => `<span class="${sub?"sub":""}">${esc(label)}</span><span class="v ${n?cls:""}">${n||""}</span>`;
-  const head = un ? ["red", `${un} item${un===1?"":"s"} not mapped yet`] : ran ? ["green", "✓ Everything's mapped"] : ["grey", M.day>today ? "Audit not done yet" : "Not mapped yet"];
+  // Dave 11/27: Hotel Gaythering showed "Everything's mapped" while its 36 decided lines had never reached Pilot - the
+  // headline only counted open questions. A pass that decided but hasn't written (or failed) is NOT mapped.
+  const unwritten = rows.find(r=>["waiting_pilot","running","failed"].includes(r.state));
+  const head = un ? ["red", `${un} item${un===1?"":"s"} not mapped yet`]
+    : unwritten ? [unwritten.state==="failed" ? "red" : "amber", unwritten.state==="running" ? "Mapping in progress" : "Decided, not written to Pilot yet"]
+    : ran ? ["green", "✓ Everything's mapped"] : ["grey", M.day>today ? "Audit not done yet" : "Not mapped yet"];
   const canAfter = c && c.map_enabled && c.map_machine && P("main") && !P("after_count") && M.day<=today && !live && !run;
   const machine = ms && ms.cls==="green" ? `<span class="mach">${esc(c.map_machine.toUpperCase())}</span>` : "";
   return `<div class="ccard dash" role="button" tabindex="0" data-cc="${esc(x.cid||"")}" data-cv="${esc(x.venue)}">
@@ -1124,15 +1131,15 @@ function renderMapping(){
     </div>
     <div id="mboard">
     <div class="days">${days.map(d=>{
-      const cs = dayCards(d), un = cs.reduce((a,x)=>a+unmappedOf(x.t), 0), ran = cs.some(x=>x.rows.length);
+      const cs = dayCards(d), un = cs.reduce((a,x)=>a+unmappedOf(x.t), 0), ran = cs.some(x=>x.rows.length), uw = unwrittenOn(d);
       return `<button class="day ${d===M.day?"on":""} ${d===today?"today":""}" data-day="${d}">
         <span class="dn">${esc(fmtDay(d))}${d===today?" · today":""}</span>
         <span class="small muted">${cs.length} audit${cs.length===1?"":"s"}</span>
-        ${un?`<span class="tag amber">${un} not mapped yet</span>`:ran?`<span class="tag green">All mapped</span>`:""}</button>`; }).join("")}</div>
+        ${un?`<span class="tag amber">${un} not mapped yet</span>`:uw?`<span class="tag amber">Not written to Pilot yet</span>`:ran?`<span class="tag green">All mapped</span>`:""}</button>`; }).join("")}</div>
     ${earlier.size?`<div class="banner amber"><b>Still open from earlier audits</b>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">${[...earlier.values()].map(e=>{ const t = tally(e.rows), c = e.cid && clientOf(e.cid);
         return `<button class="b" data-ec="${esc(e.cid||"")}" data-ev="${esc(e.venue)}" data-ea="${esc(e.audit||"")}">${esc(c?c.client_display_name:e.venue)} · ${e.audit?esc(fmtDay(e.audit)):"no date"} · ${t.open+t.failed+t.waiting} open</button>`; }).join("")}</div></div>`:""}
-    <h2 style="margin:18px 0 10px;font-size:18px">${esc(fmtLong(M.day))} <span class="muted small" style="font-weight:400">${cards.length} audit${cards.length===1?"":"s"}${(()=>{ const un = cards.reduce((a,x)=>a+unmappedOf(x.t),0); return un?` · <b style="color:var(--amber)">${un} item${un===1?"":"s"} not mapped yet</b>`:cards.some(x=>x.rows.length)?' · <b style="color:var(--green)">everything mapped</b>':""; })()}</span></h2>
+    <h2 style="margin:18px 0 10px;font-size:18px">${esc(fmtLong(M.day))} <span class="muted small" style="font-weight:400">${cards.length} audit${cards.length===1?"":"s"}${(()=>{ const un = cards.reduce((a,x)=>a+unmappedOf(x.t),0); return un?` · <b style="color:var(--amber)">${un} item${un===1?"":"s"} not mapped yet</b>`:unwrittenOn(M.day)?' · <b style="color:var(--amber)">not written to Pilot yet</b>':cards.some(x=>x.rows.length)?' · <b style="color:var(--green)">everything mapped</b>':""; })()}</span></h2>
     <div class="ccards">${cards.map(x=>dashCard(x, today)).join("") || `<div class="muted">No audits on this day.</div>`}</div>
     </div><div id="mresults"></div>`;
   $("#wkp").onclick = ()=>moveWeek(-7); $("#wkn").onclick = ()=>moveWeek(7);
